@@ -1,7 +1,7 @@
 version: 1
 services:
   - type: web
-    name: chatwork-black-bot
+    name: my-nemiiii-botbot
     env: node
     plan: free
     buildCommand: npm install
