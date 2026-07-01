@@ -4,12 +4,7 @@ const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
-
-app.use(express.json({
-    verify: (req, res, buf) => {
-        req.rawBody = buf;
-    }
-}));
+app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
 
 const API_TOKEN = process.env.CHATWORK_API_TOKEN;
 const WEBHOOK_TOKEN = process.env.CHATWORK_WEBHOOK_TOKEN;
@@ -19,10 +14,7 @@ const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const cw = axios.create({
     baseURL: 'https://api.chatwork.com/v2',
-    headers: { 
-        'X-ChatWorkToken': API_TOKEN,
-        'Content-Type': 'application/x-www-form-urlencoded'
-    }
+    headers: { 'X-ChatWorkToken': API_TOKEN, 'Content-Type': 'application/x-www-form-urlencoded' }
 });
 
 // --- ヘルパー関数 ---
@@ -36,34 +28,25 @@ const verifySignature = (req) => {
 const sendMessage = (roomId, text) => cw.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(text)}`);
 const deleteMessage = (roomId, messageId) => cw.delete(`/rooms/${roomId}/messages/${messageId}`);
 
-// 【最重要修正】メンバーを安全に変更する関数
 const updateRoomMembers = async (roomId, targetIds, roleToAdd) => {
     try {
-        // 1. 今の部屋の全メンバーを取得
         const { data: currentMembers } = await cw.get(`/rooms/${roomId}/members`);
         
-        // 2. 現在の役職ごとにIDを振り分け
         let admins = currentMembers.filter(m => m.role === 'admin' || m.role === 'creator').map(m => m.account_id.toString());
         let members = currentMembers.filter(m => m.role === 'member').map(m => m.account_id.toString());
         let readonlys = currentMembers.filter(m => m.role === 'readonly').map(m => m.account_id.toString());
 
-        // 3. 対象者を一旦すべてのリストから抜き取る（重複防止）
         for (const aid of targetIds) {
             const idStr = aid.toString();
             admins = admins.filter(id => id !== idStr);
             members = members.filter(id => id !== idStr);
             readonlys = readonlys.filter(id => id !== idStr);
-        }
-
-        // 4. 対象者を希望の役職リストに投入
-        for (const aid of targetIds) {
-            const idStr = aid.toString();
+            
             if (roleToAdd === 'admin') admins.push(idStr);
             else if (roleToAdd === 'member') members.push(idStr);
             else if (roleToAdd === 'readonly') readonlys.push(idStr);
         }
 
-        // 5. URLエンコード形式で全員分のデータを再送信（これで他の人が消えない）
         const params = new URLSearchParams();
         if (admins.length > 0) params.append('members_admin_ids', admins.join(','));
         if (members.length > 0) params.append('members_member_ids', members.join(','));
@@ -81,11 +64,8 @@ const isUserAdmin = async (roomId, accountId) => {
         const { data } = await cw.get(`/rooms/${roomId}/members`);
         const member = data.find(m => m.account_id.toString() === accountId.toString());
         return member && (member.role === 'admin' || member.role === 'creator');
-    } catch (e) {
-        return false;
-    }
+    } catch (e) { return false; }
 };
-
 
 // --- Webhook メイン処理 ---
 app.post('/webhook', async (req, res) => {
@@ -98,32 +78,51 @@ app.post('/webhook', async (req, res) => {
     const roomId = event.room_id;
 
     try {
-        // A. メッセージ受信 (コマンド)
         if (eventType === 'message_sent') {
             const body = event.body || "";
             const senderId = event.account_id;
 
-            if (body.startsWith('/blacklist') || body.startsWith('/reblacklist')) {
+            // コマンドが含まれているか判定
+            const isBlacklistCmd = /(^|\n)\/blacklist(\s|$)/.test(body);
+            const isReblacklistCmd = /(^|\n)\/reblacklist(\s|$)/.test(body);
+
+            if (isBlacklistCmd || isReblacklistCmd) {
+                // 管理者チェック
                 const isAdmin = await isUserAdmin(roomId, senderId);
                 if (!isAdmin) return res.status(200).send('Forbidden');
 
-                if (body.startsWith('/blacklist ')) {
-                    const aid = body.split(/\s+/)[1];
-                    if (aid) {
-                        await supabase.from('blacklist').upsert({ account_id: aid });
-                        // 修正: メンバー全体を更新する関数を呼び出す
-                        await updateRoomMembers(roomId, [aid], 'readonly');
-                        await sendMessage(roomId, `[info]ID: ${aid} をブラックリストに登録し、権限を「閲覧のみ」に変更しました。[/info]`);
+                let targetAid = null;
+                let commandType = 'list'; // list, add, remove
+
+                // 1. 返信タグ [rp aid=...] または 引用タグ [qtmeta aid=...] からIDを抽出
+                const replyMatch = body.match(/\[(?:rp|qtmeta)\s+aid=([0-9]+)/);
+                if (replyMatch) {
+                    targetAid = replyMatch[1];
+                    commandType = isBlacklistCmd ? 'add' : 'remove';
+                } else {
+                    // 2. 返信でない場合はスペース区切りの数字を探す (/blacklist 12345)
+                    const cmdMatch = body.match(/\/(?:blacklist|reblacklist)\s+([0-9]+)/);
+                    if (cmdMatch) {
+                        targetAid = cmdMatch[1];
+                        commandType = isBlacklistCmd ? 'add' : 'remove';
+                    } else if (isReblacklistCmd) {
+                        return res.status(200).send('No AID specified');
                     }
                 }
-                else if (body.startsWith('/reblacklist ')) {
-                    const aid = body.split(/\s+/)[1];
-                    if (aid) {
-                        await supabase.from('blacklist').delete().eq('account_id', aid);
-                        await sendMessage(roomId, `[info]ID: ${aid} をブラックリストから解除しました。[/info]`);
-                    }
-                }
-                else if (body.trim() === '/blacklist') {
+
+                // --- 実行処理 ---
+                if (commandType === 'add' && targetAid) {
+                    await supabase.from('blacklist').upsert({ account_id: targetAid });
+                    await updateRoomMembers(roomId, [targetAid], 'readonly');
+                    await sendMessage(roomId, `[info]対象者 (ID: ${targetAid}) をブラックリストに追加し、「閲覧のみ」に変更しました。[/info]`);
+                } 
+                else if (commandType === 'remove' && targetAid) {
+                    await supabase.from('blacklist').delete().eq('account_id', targetAid);
+                    // 解除後、通常のメンバーに戻す
+                    await updateRoomMembers(roomId, [targetAid], 'member');
+                    await sendMessage(roomId, `[info]対象者 (ID: ${targetAid}) をブラックリストから解除し、「メンバー」に戻しました。[/info]`);
+                } 
+                else if (commandType === 'list') {
                     const { data } = await supabase.from('blacklist').select('account_id');
                     const listStr = data && data.length > 0 ? data.map(d => d.account_id).join('\n') : "登録なし";
                     const resMsg = await sendMessage(roomId, `[info][title]ブラックリスト一覧[/title]${listStr}\n\n※1分後に消去されます[/info]`);
@@ -132,24 +131,19 @@ app.post('/webhook', async (req, res) => {
             }
         }
 
-        // B. 参加申請イベント
+        // 参加申請イベント
         if (eventType === 'member_add_request') {
             const applicants = event.applicants || [];
             let readOnlyTargets = [];
             let normalTargets = [];
 
-            // 1. 全ての申請者をチェックし、ブラック/ホワイトに仕分け
             for (const aid of applicants) {
                 const accountId = aid.toString();
                 const { data } = await supabase.from('blacklist').select('*').eq('account_id', accountId).single();
-                if (data) {
-                    readOnlyTargets.push(accountId);
-                } else {
-                    normalTargets.push(accountId);
-                }
+                if (data) readOnlyTargets.push(accountId);
+                else normalTargets.push(accountId);
             }
 
-            // 2. まとめて部屋に追加 (他の人は消えません)
             if (readOnlyTargets.length > 0) {
                 await updateRoomMembers(roomId, readOnlyTargets, 'readonly');
                 await sendMessage(roomId, `[info]ブラックリスト照合: ${readOnlyTargets.join(', ')} を「閲覧のみ」で承認しました。[/info]`);
@@ -160,13 +154,11 @@ app.post('/webhook', async (req, res) => {
             }
         }
     } catch (error) {
-        // 万が一エラーが起きてもチャットに報告させる
-        await sendMessage(roomId, `[info][title]システムエラー[/title]${error.message}[/info]`);
+        console.error("Error:", error);
     }
-
     res.status(200).send('OK');
 });
 
-app.get('/', (req, res) => res.send('Bot is Live - V2'));
+app.get('/', (req, res) => res.send('Bot is Live - V3'));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Run ${PORT}`));
