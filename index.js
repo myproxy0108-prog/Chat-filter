@@ -11,7 +11,7 @@ const API_TOKEN = process.env.CHATWORK_API_TOKEN;
 const WEBHOOK_TOKEN = process.env.CHATWORK_WEBHOOK_TOKEN;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
-const TARGET_ROOM_ID = process.env.TARGET_ROOM_ID; // 新規追加: 監視する部屋のID
+const TARGET_ROOM_ID = process.env.TARGET_ROOM_ID; // ←必ずRenderに設定してください！
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const cw = axios.create({
@@ -19,7 +19,6 @@ const cw = axios.create({
     headers: { 'X-ChatWorkToken': API_TOKEN, 'Content-Type': 'application/x-www-form-urlencoded' }
 });
 
-// 署名検証
 const verifySignature = (req) => {
     const signature = req.headers['x-chatworkwebhooksignature'];
     if (!signature) return false;
@@ -27,11 +26,9 @@ const verifySignature = (req) => {
     return signature === expected;
 };
 
-// ヘルパー関数
 const sendMessage = (roomId, text) => cw.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(text)}`).catch(()=>{});
 const deleteMessage = (roomId, messageId) => cw.delete(`/rooms/${roomId}/messages/${messageId}`).catch(()=>{});
 
-// 【キック機能】対象者をリストから除外して上書きする
 const updateRoomMembers = async (roomId, targetIds) => {
     try {
         const { data: currentMembers } = await cw.get(`/rooms/${roomId}/members`);
@@ -42,7 +39,6 @@ const updateRoomMembers = async (roomId, targetIds) => {
 
         for (const aid of targetIds) {
             const idStr = aid.toString();
-            // 全ての役職リストから対象者を消し去る ＝ キックされる
             admins = admins.filter(id => id !== idStr);
             members = members.filter(id => id !== idStr);
             readonlys = readonlys.filter(id => id !== idStr);
@@ -67,11 +63,32 @@ const isUserAdmin = async (roomId, accountId) => {
     } catch (e) { return false; }
 };
 
+// 【強化】部屋を見回してブラックリストがいたら蹴る関数
+const runPatrol = async (roomId) => {
+    try {
+        const { data: members } = await cw.get(`/rooms/${roomId}/members`);
+        const { data: blacklist } = await supabase.from('blacklist').select('account_id');
+        if (!members || !blacklist || blacklist.length === 0) return;
+
+        const blacklistedIds = blacklist.map(b => b.account_id);
+        const toKick = members
+            .filter(m => blacklistedIds.includes(m.account_id.toString()))
+            .map(m => m.account_id.toString());
+        
+        if (toKick.length > 0) {
+            await updateRoomMembers(roomId, toKick);
+            await sendMessage(roomId, `[info]【自動防衛】\nブラックリスト対象者の再侵入を検知し、自動追放しました。\n(ID: ${toKick.join(', ')})[/info]`);
+        }
+    } catch (e) {
+        console.error("Patrol error", e.message);
+    }
+};
+
+
 // --- Webhook メイン処理 ---
 app.post('/webhook', async (req, res) => {
     if (!verifySignature(req)) return res.status(401).send('Invalid Signature');
 
-    // 【修正】本当のイベント名は message_created です
     const eventType = req.body.webhook_event_type;
     const event = req.body.webhook_event;
     if (!event || eventType !== 'message_created') return res.status(200).send('Ignored');
@@ -82,7 +99,7 @@ app.post('/webhook', async (req, res) => {
     const messageId = event.message_id;
 
     try {
-        // 1. もしブラックリスト本人が発言したら、即座に発言を消してキックする
+        // 1. ブラックリスト本人が発言したら、発言を消して即キック
         const { data: isBlacklisted } = await supabase.from('blacklist').select('*').eq('account_id', senderId).single();
         if (isBlacklisted) {
             await deleteMessage(roomId, messageId);
@@ -90,7 +107,10 @@ app.post('/webhook', async (req, res) => {
             return res.status(200).send('Kicked');
         }
 
-        // 2. コマンド処理
+        // 2. 本人以外の発言なら、ついでに部屋を見回して密入国者をキック（Botが寝ていた時の対策）
+        runPatrol(roomId);
+
+        // 3. コマンド処理
         const isBlacklistCmd = /(^|\n)\/blacklist(\s|$)/.test(body);
         const isReblacklistCmd = /(^|\n)\/reblacklist(\s|$)/.test(body);
 
@@ -101,13 +121,11 @@ app.post('/webhook', async (req, res) => {
             let targetAid = null;
             let commandType = 'list';
 
-            // 返信タグからの抽出
             const replyMatch = body.match(/\[(?:rp|qtmeta)\s+aid=([0-9]+)/);
             if (replyMatch) {
                 targetAid = replyMatch[1];
                 commandType = isBlacklistCmd ? 'add' : 'remove';
             } else {
-                // 手打ちコマンドからの抽出
                 const cmdMatch = body.match(/\/(?:blacklist|reblacklist)\s+([0-9]+)/);
                 if (cmdMatch) {
                     targetAid = cmdMatch[1];
@@ -117,11 +135,10 @@ app.post('/webhook', async (req, res) => {
                 }
             }
 
-            // 実行
             if (commandType === 'add' && targetAid) {
                 await supabase.from('blacklist').upsert({ account_id: targetAid });
-                await updateRoomMembers(roomId, [targetAid]); // キック
-                await sendMessage(roomId, `[info]対象者(ID: ${targetAid})をブラックリストに登録し、部屋から強制追放しました。[/info]`);
+                await updateRoomMembers(roomId, [targetAid]);
+                await sendMessage(roomId, `[info]対象者(ID: ${targetAid})をブラックリストに登録し、強制追放しました。[/info]`);
             } 
             else if (commandType === 'remove' && targetAid) {
                 await supabase.from('blacklist').delete().eq('account_id', targetAid);
@@ -140,30 +157,11 @@ app.post('/webhook', async (req, res) => {
     res.status(200).send('OK');
 });
 
-// --- 自動パトロール機能（10秒に1回） ---
-setInterval(async () => {
-    if (!TARGET_ROOM_ID) return;
-    try {
-        const { data: members } = await cw.get(`/rooms/${TARGET_ROOM_ID}/members`);
-        const { data: blacklist } = await supabase.from('blacklist').select('account_id');
-        if (!members || !blacklist || blacklist.length === 0) return;
+// --- 自動パトロール（Botが起きている間は10秒に1回見回る） ---
+setInterval(() => {
+    if (TARGET_ROOM_ID) runPatrol(TARGET_ROOM_ID);
+}, 10000);
 
-        const blacklistedIds = blacklist.map(b => b.account_id);
-        
-        // 部屋にいるメンバーの中にブラックリストのIDがないか照合
-        const toKick = members
-            .filter(m => blacklistedIds.includes(m.account_id.toString()))
-            .map(m => m.account_id.toString());
-        
-        if (toKick.length > 0) {
-            await updateRoomMembers(TARGET_ROOM_ID, toKick); // 即座にキック
-            await sendMessage(TARGET_ROOM_ID, `[info]【システム】\nブラックリスト対象者 (${toKick.join(', ')}) の侵入を検知したため、即座に追放しました。入ってくんなハゲ[/info]`);
-        }
-    } catch (e) {
-        // エラーは無視してパトロール継続
-    }
-}, 1000);
-
-app.get('/', (req, res) => res.send('Bot is Live - V4 (Patrol Active)'));
+app.get('/', (req, res) => res.send('Bot is Live - V5 (Patrol Active)'));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Run ${PORT}`));
