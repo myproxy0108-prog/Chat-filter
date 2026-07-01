@@ -6,12 +6,11 @@ const { createClient } = require('@supabase/supabase-js');
 const app = express();
 app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
 
-// --- 環境変数 ---
 const API_TOKEN = process.env.CHATWORK_API_TOKEN;
 const WEBHOOK_TOKEN = process.env.CHATWORK_WEBHOOK_TOKEN;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
-const TARGET_ROOM_ID = process.env.TARGET_ROOM_ID; // ←必ずRenderに設定してください！
+const TARGET_ROOM_ID = process.env.TARGET_ROOM_ID; // ←監視する部屋の数字ID
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const cw = axios.create({
@@ -29,6 +28,7 @@ const verifySignature = (req) => {
 const sendMessage = (roomId, text) => cw.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(text)}`).catch(()=>{});
 const deleteMessage = (roomId, messageId) => cw.delete(`/rooms/${roomId}/messages/${messageId}`).catch(()=>{});
 
+// 【強化】エラーをチャットに報告するキック関数
 const updateRoomMembers = async (roomId, targetIds) => {
     try {
         const { data: currentMembers } = await cw.get(`/rooms/${roomId}/members`);
@@ -37,12 +37,21 @@ const updateRoomMembers = async (roomId, targetIds) => {
         let members = currentMembers.filter(m => m.role === 'member').map(m => m.account_id.toString());
         let readonlys = currentMembers.filter(m => m.role === 'readonly').map(m => m.account_id.toString());
 
+        let targetFound = false;
+
         for (const aid of targetIds) {
             const idStr = aid.toString();
+            // 部屋に相手がいるかチェック
+            if (admins.includes(idStr) || members.includes(idStr) || readonlys.includes(idStr)) {
+                targetFound = true;
+            }
             admins = admins.filter(id => id !== idStr);
             members = members.filter(id => id !== idStr);
             readonlys = readonlys.filter(id => id !== idStr);
         }
+
+        // 部屋にいないならキック処理をスキップ（エラー防止）
+        if (!targetFound) return false; 
 
         const params = new URLSearchParams();
         if (admins.length > 0) params.append('members_admin_ids', admins.join(','));
@@ -50,8 +59,12 @@ const updateRoomMembers = async (roomId, targetIds) => {
         if (readonlys.length > 0) params.append('members_readonly_ids', readonlys.join(','));
 
         await cw.put(`/rooms/${roomId}/members`, params.toString());
+        return true;
     } catch (err) {
-        console.error("Member update error:", err.message);
+        // ★APIがキックを拒否した場合、その理由をチャットに送信する
+        const errorDetail = err.response ? JSON.stringify(err.response.data) : err.message;
+        await sendMessage(roomId, `[info][title]⚠️キック失敗（追放エラー）[/title]以下の理由でChatworkにキックをブロックされました:\n${errorDetail}[/info]`);
+        throw err;
     }
 };
 
@@ -63,7 +76,6 @@ const isUserAdmin = async (roomId, accountId) => {
     } catch (e) { return false; }
 };
 
-// 【強化】部屋を見回してブラックリストがいたら蹴る関数
 const runPatrol = async (roomId) => {
     try {
         const { data: members } = await cw.get(`/rooms/${roomId}/members`);
@@ -76,16 +88,16 @@ const runPatrol = async (roomId) => {
             .map(m => m.account_id.toString());
         
         if (toKick.length > 0) {
-            await updateRoomMembers(roomId, toKick);
-            await sendMessage(roomId, `[info]【自動防衛】\nブラックリスト対象者の再侵入を検知し、自動追放しました。\n(ID: ${toKick.join(', ')})[/info]`);
+            const kicked = await updateRoomMembers(roomId, toKick);
+            if (kicked) {
+                await sendMessage(roomId, `[info]【自動防衛作動】\nブラックリスト対象者の侵入を検知し、即座に追放しました。\n(ID: ${toKick.join(', ')})[/info]`);
+            }
         }
     } catch (e) {
         console.error("Patrol error", e.message);
     }
 };
 
-
-// --- Webhook メイン処理 ---
 app.post('/webhook', async (req, res) => {
     if (!verifySignature(req)) return res.status(401).send('Invalid Signature');
 
@@ -99,15 +111,16 @@ app.post('/webhook', async (req, res) => {
     const messageId = event.message_id;
 
     try {
-        // 1. ブラックリスト本人が発言したら、発言を消して即キック
+        // 1. ブラックリスト本人が発言したら即キック
         const { data: isBlacklisted } = await supabase.from('blacklist').select('*').eq('account_id', senderId).single();
         if (isBlacklisted) {
-            await deleteMessage(roomId, messageId);
-            await updateRoomMembers(roomId, [senderId]);
+            await updateRoomMembers(roomId, [senderId]); // キック
+            // メッセージはBot自身のものしか消せません（Chatworkの仕様）
+            await deleteMessage(roomId, messageId); 
             return res.status(200).send('Kicked');
         }
 
-        // 2. 本人以外の発言なら、ついでに部屋を見回して密入国者をキック（Botが寝ていた時の対策）
+        // 2. 本人以外の発言ならついでにパトロール
         runPatrol(roomId);
 
         // 3. コマンド処理
@@ -157,11 +170,11 @@ app.post('/webhook', async (req, res) => {
     res.status(200).send('OK');
 });
 
-// --- 自動パトロール（Botが起きている間は10秒に1回見回る） ---
+// 自動パトロール（10秒に1回）
 setInterval(() => {
     if (TARGET_ROOM_ID) runPatrol(TARGET_ROOM_ID);
 }, 10000);
 
-app.get('/', (req, res) => res.send('Bot is Live - V5 (Patrol Active)'));
+app.get('/', (req, res) => res.send('Bot is Live - V6'));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Run ${PORT}`));
