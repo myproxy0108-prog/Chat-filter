@@ -9,7 +9,7 @@ app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
 const API_TOKEN = process.env.CHATWORK_API_TOKEN;
 const WEBHOOK_TOKEN = process.env.CHATWORK_WEBHOOK_TOKEN;
 const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_KEY; // ※必ずservice_roleキーにしてください
+const SUPABASE_KEY = process.env.SUPABASE_KEY; 
 const TARGET_ROOM_ID = process.env.TARGET_ROOM_ID; 
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
@@ -59,7 +59,7 @@ const updateRoomMembers = async (roomId, targetIds) => {
         return true;
     } catch (err) {
         const errorDetail = err.response ? JSON.stringify(err.response.data) : err.message;
-        await sendMessage(roomId, `[info][title]⚠️キック失敗[/title]Chatworkにキックをブロックされました:\n${errorDetail}[/info]`);
+        await sendMessage(roomId, `[info][title]⚠️メンバー追放エラー[/title]${errorDetail}[/info]`);
         throw err;
     }
 };
@@ -75,8 +75,8 @@ const isUserAdmin = async (roomId, accountId) => {
 const runPatrol = async (roomId) => {
     try {
         const { data: members } = await cw.get(`/rooms/${roomId}/members`);
-        const { data: blacklist } = await supabase.from('blacklist').select('account_id');
-        if (!members || !blacklist || blacklist.length === 0) return;
+        const { data: blacklist, error } = await supabase.from('blacklist').select('account_id');
+        if (error || !members || !blacklist || blacklist.length === 0) return;
 
         const blacklistedIds = blacklist.map(b => b.account_id);
         const toKick = members
@@ -86,12 +86,10 @@ const runPatrol = async (roomId) => {
         if (toKick.length > 0) {
             const kicked = await updateRoomMembers(roomId, toKick);
             if (kicked) {
-                await sendMessage(roomId, `[info]【自動防衛作動】\nブラックリスト対象者の侵入を検知し、即座に追放しました。\n(ID: ${toKick.join(', ')})[/info]`);
+                await sendMessage(roomId, `[info]【自動防衛作動】\nブラックリスト対象者 (${toKick.join(', ')}) を自動追放しました。[/info]`);
             }
         }
-    } catch (e) {
-        // パトロール時のエラーは無視
-    }
+    } catch (e) {}
 };
 
 app.post('/webhook', async (req, res) => {
@@ -107,7 +105,7 @@ app.post('/webhook', async (req, res) => {
     const messageId = event.message_id;
 
     try {
-        // 1. ブラックリスト本人が発言したら即キック
+        // 1. 本人発言時チェック
         const { data: isBlacklisted } = await supabase.from('blacklist').select('account_id').eq('account_id', senderId);
         if (isBlacklisted && isBlacklisted.length > 0) {
             await updateRoomMembers(roomId, [senderId]); 
@@ -115,7 +113,6 @@ app.post('/webhook', async (req, res) => {
             return res.status(200).send('Kicked');
         }
 
-        // 2. パトロール作動
         runPatrol(roomId);
 
         // 3. コマンド処理
@@ -143,39 +140,51 @@ app.post('/webhook', async (req, res) => {
                 }
             }
 
-            // 【新規】登録済みかどうかの判定処理
+            // 【完全修正】Supabaseのエラーを確実に検知してチャットに流す
             if (commandType === 'add' && targetAid) {
-                const { data: existing } = await supabase.from('blacklist').select('account_id').eq('account_id', targetAid);
+                const { data: existing, error: selectErr } = await supabase.from('blacklist').select('account_id').eq('account_id', targetAid);
+                if (selectErr) return await sendMessage(roomId, `[info][title]DB検索エラー[/title]${selectErr.message}[/info]`);
+
                 if (existing && existing.length > 0) {
-                    // 既に登録されている場合
-                    await sendMessage(roomId, `[info]対象者(ID: ${targetAid}) は既にブラックリストに登録されています。[/info]`);
+                    await sendMessage(roomId, `[info]対象者(ID: ${targetAid}) は【既に】ブラックリストに登録されています。[/info]`);
                 } else {
-                    // 新規登録
-                    await supabase.from('blacklist').insert({ account_id: targetAid });
+                    // ★ここでエラーが発生していたらチャットに表示されるようにしました
+                    const { error: insertErr } = await supabase.from('blacklist').insert({ account_id: targetAid });
+                    if (insertErr) {
+                        await sendMessage(roomId, `[info][title]⚠️DB保存エラー[/title]${insertErr.message}[/info]`);
+                        return;
+                    }
+                    
                     await updateRoomMembers(roomId, [targetAid]);
-                    await sendMessage(roomId, `[info]対象者(ID: ${targetAid})をブラックリストに登録し、強制追放しました。[/info]`);
+                    await sendMessage(roomId, `[info]対象者(ID: ${targetAid}) をブラックリストに新規登録し、強制追放しました。[/info]`);
                 }
             } 
             else if (commandType === 'remove' && targetAid) {
-                const { data: existing } = await supabase.from('blacklist').select('account_id').eq('account_id', targetAid);
+                const { data: existing, error: selectErr } = await supabase.from('blacklist').select('account_id').eq('account_id', targetAid);
+                if (selectErr) return await sendMessage(roomId, `[info][title]DB検索エラー[/title]${selectErr.message}[/info]`);
+
                 if (!existing || existing.length === 0) {
-                    // 登録されていない場合
                     await sendMessage(roomId, `[info]対象者(ID: ${targetAid}) はブラックリストに登録されていません。[/info]`);
                 } else {
-                    // 解除
-                    await supabase.from('blacklist').delete().eq('account_id', targetAid);
-                    await sendMessage(roomId, `[info]対象者(ID: ${targetAid})をブラックリストから解除しました。[/info]`);
+                    const { error: deleteErr } = await supabase.from('blacklist').delete().eq('account_id', targetAid);
+                    if (deleteErr) return await sendMessage(roomId, `[info][title]⚠️DB削除エラー[/title]${deleteErr.message}[/info]`);
+
+                    await sendMessage(roomId, `[info]対象者(ID: ${targetAid}) をブラックリストから解除しました。[/info]`);
                 }
             } 
             else if (commandType === 'list') {
-                const { data } = await supabase.from('blacklist').select('account_id');
+                const { data, error: listErr } = await supabase.from('blacklist').select('account_id');
+                if (listErr) return await sendMessage(roomId, `[info][title]DB読出エラー[/title]${listErr.message}[/info]`);
+
                 const listStr = data && data.length > 0 ? data.map(d => d.account_id).join('\n') : "登録なし";
                 const resMsg = await sendMessage(roomId, `[info][title]ブラックリスト一覧[/title]${listStr}\n\n※1分後に自動消去されます[/info]`);
-                setTimeout(() => deleteMessage(roomId, resMsg.data.message_id), 60000);
+                if (resMsg && resMsg.data) {
+                    setTimeout(() => deleteMessage(roomId, resMsg.data.message_id), 60000);
+                }
             }
         }
     } catch (error) {
-        console.error("Error:", error);
+        console.error("Critical Error:", error);
     }
     res.status(200).send('OK');
 });
@@ -184,6 +193,6 @@ setInterval(() => {
     if (TARGET_ROOM_ID) runPatrol(TARGET_ROOM_ID);
 }, 10000);
 
-app.get('/', (req, res) => res.send('Bot is Live - V7'));
+app.get('/', (req, res) => res.send('Bot is Live - V8'));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Run ${PORT}`));
