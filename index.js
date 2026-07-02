@@ -72,6 +72,7 @@ const isUserAdmin = async (roomId, accountId) => {
     } catch (e) { return false; }
 };
 
+// 【無言化】自動防衛（パトロール）機能
 const runPatrol = async (roomId) => {
     try {
         const { data: members } = await cw.get(`/rooms/${roomId}/members`);
@@ -84,10 +85,8 @@ const runPatrol = async (roomId) => {
             .map(m => m.account_id.toString());
         
         if (toKick.length > 0) {
-            const kicked = await updateRoomMembers(roomId, toKick);
-            if (kicked) {
-                await sendMessage(roomId, `[info]【自動防衛作動】\nブラックリスト対象者 (${toKick.join(', ')}) を自動追放しました。[/info]`);
-            }
+            // 対象者がいたらキックするだけ（チャットへの通知は送らない）
+            await updateRoomMembers(roomId, toKick);
         }
     } catch (e) {}
 };
@@ -105,7 +104,7 @@ app.post('/webhook', async (req, res) => {
     const messageId = event.message_id;
 
     try {
-        // 1. 本人発言時チェック
+        // 1. 本人発言時チェック（無言でキック＆発言削除）
         const { data: isBlacklisted } = await supabase.from('blacklist').select('account_id').eq('account_id', senderId);
         if (isBlacklisted && isBlacklisted.length > 0) {
             await updateRoomMembers(roomId, [senderId]); 
@@ -140,23 +139,21 @@ app.post('/webhook', async (req, res) => {
                 }
             }
 
-            // 【完全修正】Supabaseのエラーを確実に検知してチャットに流す
+            // 【アイコン・名前表示化】
             if (commandType === 'add' && targetAid) {
                 const { data: existing, error: selectErr } = await supabase.from('blacklist').select('account_id').eq('account_id', targetAid);
                 if (selectErr) return await sendMessage(roomId, `[info][title]DB検索エラー[/title]${selectErr.message}[/info]`);
 
                 if (existing && existing.length > 0) {
-                    await sendMessage(roomId, `[info]対象者(ID: ${targetAid}) は【既に】ブラックリストに登録されています。[/info]`);
+                    await sendMessage(roomId, `[info][piconname:${targetAid}] は【既に】ブラックリストに登録されています。[/info]`);
                 } else {
-                    // ★ここでエラーが発生していたらチャットに表示されるようにしました
                     const { error: insertErr } = await supabase.from('blacklist').insert({ account_id: targetAid });
                     if (insertErr) {
-                        await sendMessage(roomId, `[info][title]⚠️DB保存エラー[/title]${insertErr.message}[/info]`);
-                        return;
+                        return await sendMessage(roomId, `[info][title]⚠️DB保存エラー[/title]${insertErr.message}[/info]`);
                     }
                     
                     await updateRoomMembers(roomId, [targetAid]);
-                    await sendMessage(roomId, `[info]対象者(ID: ${targetAid}) をブラックリストに新規登録し、強制追放しました。[/info]`);
+                    await sendMessage(roomId, `[info][piconname:${targetAid}] をブラックリストに新規登録し、強制追放しました。[/info]`);
                 }
             } 
             else if (commandType === 'remove' && targetAid) {
@@ -164,20 +161,22 @@ app.post('/webhook', async (req, res) => {
                 if (selectErr) return await sendMessage(roomId, `[info][title]DB検索エラー[/title]${selectErr.message}[/info]`);
 
                 if (!existing || existing.length === 0) {
-                    await sendMessage(roomId, `[info]対象者(ID: ${targetAid}) はブラックリストに登録されていません。[/info]`);
+                    await sendMessage(roomId, `[info][piconname:${targetAid}] はブラックリストに登録されていません。[/info]`);
                 } else {
                     const { error: deleteErr } = await supabase.from('blacklist').delete().eq('account_id', targetAid);
                     if (deleteErr) return await sendMessage(roomId, `[info][title]⚠️DB削除エラー[/title]${deleteErr.message}[/info]`);
 
-                    await sendMessage(roomId, `[info]対象者(ID: ${targetAid}) をブラックリストから解除しました。[/info]`);
+                    await sendMessage(roomId, `[info][piconname:${targetAid}] をブラックリストから解除しました。[/info]`);
                 }
             } 
             else if (commandType === 'list') {
                 const { data, error: listErr } = await supabase.from('blacklist').select('account_id');
                 if (listErr) return await sendMessage(roomId, `[info][title]DB読出エラー[/title]${listErr.message}[/info]`);
 
-                const listStr = data && data.length > 0 ? data.map(d => d.account_id).join('\n') : "登録なし";
+                // 一覧表示でもアイコンと名前を表示する
+                const listStr = data && data.length > 0 ? data.map(d => `[piconname:${d.account_id}] (ID: ${d.account_id})`).join('\n') : "登録なし";
                 const resMsg = await sendMessage(roomId, `[info][title]ブラックリスト一覧[/title]${listStr}\n\n※1分後に自動消去されます[/info]`);
+                
                 if (resMsg && resMsg.data) {
                     setTimeout(() => deleteMessage(roomId, resMsg.data.message_id), 60000);
                 }
@@ -193,6 +192,6 @@ setInterval(() => {
     if (TARGET_ROOM_ID) runPatrol(TARGET_ROOM_ID);
 }, 10000);
 
-app.get('/', (req, res) => res.send('Bot is Live - V8'));
+app.get('/', (req, res) => res.send('Bot is Live - V9 (Final)'));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Run ${PORT}`));
