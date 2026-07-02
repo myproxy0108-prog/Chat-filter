@@ -115,8 +115,8 @@ app.post('/webhook', async (req, res) => {
         runPatrol(roomId);
 
         // 3. コマンド処理
-        const isBlacklistCmd = /(^|\n)\/blacklist(\s|$)/.test(body);
-        const isReblacklistCmd = /(^|\n)\/reblacklist(\s|$)/.test(body);
+        const isBlacklistCmd = /(^|\n)\/black(\s|$)/.test(body);
+        const isReblacklistCmd = /(^|\n)\/reblack(\s|$)/.test(body);
 
         if (isBlacklistCmd || isReblacklistCmd) {
             const isAdmin = await isUserAdmin(roomId, senderId);
@@ -130,7 +130,7 @@ app.post('/webhook', async (req, res) => {
                 targetAid = replyMatch[1];
                 commandType = isBlacklistCmd ? 'add' : 'remove';
             } else {
-                const cmdMatch = body.match(/\/(?:blacklist|reblacklist)\s+([0-9]+)/);
+                const cmdMatch = body.match(/\/(?:black|reblack)\s+([0-9]+)/);
                 if (cmdMatch) {
                     targetAid = cmdMatch[1];
                     commandType = isBlacklistCmd ? 'add' : 'remove';
