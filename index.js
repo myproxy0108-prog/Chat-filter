@@ -20,7 +20,7 @@ const cw = axios.create({
 
 let botAccountId = null;
 let gambleActive = false;
-let localLastResetDate = null; // リセット連投防止用のローカル変数
+let localLastResetDate = null; 
 
 const initBot = async () => {
     try {
@@ -94,7 +94,6 @@ const checkDailyReset = async (roomId) => {
         const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
         const todayStr = jst.toISOString().split('T')[0];
         
-        // メモリ上で確認済みなら完全にスキップ（連投防止）
         if (localLastResetDate === todayStr) return; 
 
         const { data } = await supabase.from('config').select('value').eq('key', 'last_reset_date').single();
@@ -103,14 +102,12 @@ const checkDailyReset = async (roomId) => {
             return;
         }
 
-        // リセット実行（スロット回数のみ 0 にする）
-        localLastResetDate = todayStr; // 先にフラグを立てて連投を防ぐ
+        localLastResetDate = todayStr;
         await supabase.from('players').update({ slot_count: 0 }).neq('account_id', '0');
         await supabase.from('config').upsert({ key: 'last_reset_date', value: todayStr });
         if (roomId) await sendMessage(roomId, `[info][title]🔄 日替わりリセット[/title]深夜0時になりました。\n全プレイヤーの【スロット回数】が 0 にリセットされました！\n(※所持金・借金はそのままです)[/info]`);
     } catch (e) {}
 };
-
 
 // --- Webhook メイン処理 ---
 app.post('/webhook', (req, res) => {
@@ -120,15 +117,13 @@ app.post('/webhook', (req, res) => {
     const event = req.body.webhook_event;
     if (!event || eventType !== 'message_created') return res.status(200).send('Ignored');
 
-    // ★【超重要】受け取ったら一瞬でChatworkにOKを返す（タイムアウトによる連投バグを完全防止）
-    res.status(200).send('OK');
+    res.status(200).send('OK'); // 連投バグ防止のため即座に返信
 
     const roomId = event.room_id;
     const body = event.body || "";
     const senderId = event.account_id.toString();
     const messageId = event.message_id;
 
-    // 非同期で裏側で処理を実行
     (async () => {
         try {
             // --- ブラックリスト本人のキック ---
@@ -141,16 +136,10 @@ app.post('/webhook', (req, res) => {
 
             runPatrol(roomId);
 
-            // --- 発言ごとに1コイン付与 ---
-            if (gambleActive) {
-                const { data: pData } = await supabase.from('players').select('*').eq('account_id', senderId).single();
-                if (pData) await supabase.from('players').update({ money: pData.money + 1 }).eq('account_id', senderId);
-                else await supabase.from('players').insert({ account_id: senderId, money: 1, debt: 0, slot_count: 0 });
-            }
-
-            // --- コマンド処理 ---
+            // --- コマンド判定 ---
             const isBlacklistCmd = /(^|\n)\/blacklist(\s|$)/.test(body);
             const isReblacklistCmd = /(^|\n)\/reblacklist(\s|$)/.test(body);
+            const isAnyCommand = /(^|\n)\/(blacklist|reblacklist|st-gya|fi-gya|debt|give|money-rank|slot)(\s|$)/.test(body);
 
             if (isBlacklistCmd || isReblacklistCmd) {
                 const isAdmin = await isUserAdmin(roomId, senderId);
@@ -251,11 +240,23 @@ app.post('/webhook', (req, res) => {
                 return;
             }
 
-            // --- スロット実行 ---
-            // ★【修正】返信内のテキスト（数字）だけを正確に読み取れるようにしました
-            const rpMatch = body.match(/\[rp aid=([0-9]+).*?\]\s*([0-9]+)/);
-            if (gambleActive && botAccountId && rpMatch && rpMatch[1] === botAccountId) {
-                const betAmount = parseInt(rpMatch[2], 10);
+            // --- ★修正：スロット実行（数字だけを抽出する） ---
+            const isRpToBot = botAccountId && body.includes(`[rp aid=${botAccountId}`);
+            if (gambleActive && isRpToBot && !isAnyCommand) {
+                // 返信タグなどを消して文字だけに
+                const textPart = body.replace(/\[.*?\]/g, '').trim();
+                const words = textPart.split(/[\s\n]+/);
+                
+                let betAmount = NaN;
+                // 一番最後に書かれた「数字」を探す
+                for (let i = words.length - 1; i >= 0; i--) {
+                    const w = words[i].replace(/[^0-9]/g, '');
+                    if (w.length > 0) {
+                        betAmount = parseInt(w, 10);
+                        break;
+                    }
+                }
+                
                 if (!isNaN(betAmount) && betAmount > 0) {
                     const { data } = await supabase.from('players').select('*').eq('account_id', senderId).single();
                     if (!data || data.money < betAmount) {
@@ -305,12 +306,21 @@ app.post('/webhook', (req, res) => {
                     
                     await supabase.from('players').update({ money: newMoney, slot_count: newCount }).eq('account_id', senderId);
                     await sendMessage(roomId, `[rp aid=${senderId}]\n🎰 スロット結果 🎰\n【 ${symbolResult} 】\n${msgResult}\n賭け金: ${betAmount} ➡ 獲得: ${winAmount} コイン\n(残り回数: ${3 - newCount}回)`);
+                    return; // コインを二重付与しないように終了
                 }
             }
+
+            // --- コイン付与 (スロットやコマンド以外の通常発言のみ) ---
+            if (gambleActive) {
+                const { data: pData } = await supabase.from('players').select('*').eq('account_id', senderId).single();
+                if (pData) await supabase.from('players').update({ money: pData.money + 1 }).eq('account_id', senderId);
+                else await supabase.from('players').insert({ account_id: senderId, money: 1, debt: 0, slot_count: 0 });
+            }
+
         } catch (error) {
             console.error(error);
         }
-    })(); // 非同期実行
+    })();
 });
 
 // --- ループ処理 (パトロール & 0時リセット監視) ---
@@ -321,6 +331,6 @@ setInterval(() => {
     }
 }, 10000);
 
-app.get('/', (req, res) => res.send('Bot is Live - V12 (Final Fix)'));
+app.get('/', (req, res) => res.send('Bot is Live - V13'));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Run ${PORT}`));
