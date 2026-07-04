@@ -21,8 +21,6 @@ const cw = axios.create({
 let gambleActive = false;
 let localLastResetDate = null; 
 const spamRecords = {};
-
-// --- 丁半ゲーム 状態管理 ---
 const chState = {};
 
 const initBot = async () => {
@@ -43,58 +41,62 @@ const verifySignature = (req) => {
 const sendMessage = (roomId, text) => cw.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(text)}`).catch(()=>{});
 const deleteMessage = (roomId, messageId) => cw.delete(`/rooms/${roomId}/messages/${messageId}`).catch(()=>{});
 
-// --- 丁半ゲーム タイムアウト＆進行処理 ---
+// --- 丁半ゲーム タイムアウト＆進行処理（安全装置追加） ---
 const handleTimeout = async (roomId) => {
-    let ch = chState[roomId];
-    if (!ch || ch.state === 'IDLE') return;
+    try {
+        let ch = chState[roomId];
+        if (!ch || ch.state === 'IDLE') return;
 
-    if (ch.state === 'RECRUITING') {
-        if (ch.players.length > 0) {
-            ch.state = 'BETTING';
-            await sendMessage(roomId, `[info]⏳ 1分経過したため募集を締め切り、丁半ゲームを開始します！\n参加者は /bet 掛け金 でベットしてください。(1分以内にベットがないと退出になります)[/info]`);
-            startTimer(roomId, 60000);
-        } else {
-            ch.state = 'IDLE';
+        if (ch.state === 'RECRUITING') {
+            if (ch.players.length > 0) {
+                ch.state = 'BETTING';
+                await sendMessage(roomId, `[info]⏳ 1分経過したため募集を締め切り、丁半ゲームを開始します！\n参加者は /bet 掛け金 でベットしてください。(1分以内にベットがないと退出になります)[/info]`);
+                startTimer(roomId, 60000);
+            } else {
+                ch.state = 'IDLE';
+            }
+        } else if (ch.state === 'BETTING') {
+            let kicked = [];
+            let activePlayers = [];
+            for (let p of ch.players) {
+                if (p.bet === 0) kicked.push(p.aid);
+                else activePlayers.push(p);
+            }
+            ch.players = activePlayers;
+            if (kicked.length > 0) {
+                await sendMessage(roomId, `[info]⏳ ベット制限時間(1分)を超過したため、以下のプレイヤーを退出させました。\n${kicked.map(aid=>`[piconname:${aid}]`).join(' ')}[/info]`);
+            }
+            if (ch.players.length === 0) {
+                await sendMessage(roomId, `[info]参加者がいなくなったため、丁半ゲームを中止します。[/info]`);
+                ch.state = 'IDLE';
+            } else {
+                await moveToChoosing(roomId);
+            }
+        } else if (ch.state === 'CHOOSING') {
+            let kicked = [];
+            let activePlayers = [];
+            for (let p of ch.players) {
+                if (!p.choice) {
+                    kicked.push(p.aid);
+                    try {
+                        const { data } = await supabase.from('players').select('money').eq('account_id', p.aid).single();
+                        if (data) await supabase.from('players').update({ money: data.money + p.bet }).eq('account_id', p.aid);
+                    } catch(e){}
+                } else activePlayers.push(p);
+            }
+            ch.players = activePlayers;
+            if (kicked.length > 0) {
+                await sendMessage(roomId, `[info]⏳ 選択制限時間(1分)を超過したため、以下のプレイヤーを退出させ返金しました。\n${kicked.map(aid=>`[piconname:${aid}]`).join(' ')}[/info]`);
+            }
+            if (ch.players.length === 0) {
+                await sendMessage(roomId, `[info]参加者がいなくなったため、丁半ゲームを中止します。[/info]`);
+                ch.state = 'IDLE';
+            } else {
+                await resolveChouhan(roomId);
+            }
         }
-    } else if (ch.state === 'BETTING') {
-        let kicked = [];
-        let activePlayers = [];
-        for (let p of ch.players) {
-            if (p.bet === 0) kicked.push(p.aid);
-            else activePlayers.push(p);
-        }
-        ch.players = activePlayers;
-        if (kicked.length > 0) {
-            await sendMessage(roomId, `[info]⏳ ベット制限時間(1分)を超過したため、以下のプレイヤーを退出させました。\n${kicked.map(aid=>`[piconname:${aid}]`).join(' ')}[/info]`);
-        }
-        if (ch.players.length === 0) {
-            await sendMessage(roomId, `[info]参加者がいなくなったため、丁半ゲームを中止します。[/info]`);
-            ch.state = 'IDLE';
-        } else {
-            await moveToChoosing(roomId);
-        }
-    } else if (ch.state === 'CHOOSING') {
-        let kicked = [];
-        let activePlayers = [];
-        for (let p of ch.players) {
-            if (!p.choice) {
-                kicked.push(p.aid);
-                try {
-                    const { data } = await supabase.from('players').select('money').eq('account_id', p.aid).single();
-                    if (data) await supabase.from('players').update({ money: data.money + p.bet }).eq('account_id', p.aid);
-                } catch(e){}
-            } else activePlayers.push(p);
-        }
-        ch.players = activePlayers;
-        if (kicked.length > 0) {
-            await sendMessage(roomId, `[info]⏳ 選択制限時間(1分)を超過したため、以下のプレイヤーを退出させ返金しました。\n${kicked.map(aid=>`[piconname:${aid}]`).join(' ')}[/info]`);
-        }
-        if (ch.players.length === 0) {
-            await sendMessage(roomId, `[info]参加者がいなくなったため、丁半ゲームを中止します。[/info]`);
-            ch.state = 'IDLE';
-        } else {
-            await resolveChouhan(roomId);
-        }
+    } catch (e) {
+        console.error("Timeout Error:", e);
     }
 };
 
@@ -105,45 +107,50 @@ const startTimer = (roomId, ms = 60000) => {
 };
 
 const moveToChoosing = async (roomId) => {
-    let ch = chState[roomId];
-    ch.state = 'CHOOSING';
-    await sendMessage(roomId, `[info][title]🎲 丁半 選択[/title]全員のベットが完了しました！\nサイコロの合計が【丁(偶数)】か【半(奇数)】かを予想してください。\n\n/chou または /han と発言してください。(制限時間1分)[/info]`);
-    startTimer(roomId, 60000);
+    try {
+        let ch = chState[roomId];
+        if (!ch) return;
+        ch.state = 'CHOOSING';
+        await sendMessage(roomId, `[info][title]🎲 丁半 選択[/title]全員のベットが完了しました！\nサイコロの合計が【丁(偶数)】か【半(奇数)】かを予想してください。\n\n/chou または /han と発言してください。(制限時間1分)[/info]`);
+        startTimer(roomId, 60000);
+    } catch (e) { console.error("Choosing Error:", e); }
 };
 
 const resolveChouhan = async (roomId) => {
-    let ch = chState[roomId];
-    if (ch.timeoutId) clearTimeout(ch.timeoutId);
-    
-    let d1 = Math.floor(Math.random() * 6) + 1;
-    let d2 = Math.floor(Math.random() * 6) + 1;
-    let sum = d1 + d2;
-    let resultType = (sum % 2 === 0) ? 'chou' : 'han';
-    let resultName = (resultType === 'chou') ? '丁 (偶数)' : '半 (奇数)';
-
-    let msg = `[info][title]🎲 結果発表[/title]サイコロの目は【 ${d1} 】と【 ${d2} 】\n合計： ${sum} ➡ 『 ${resultName} 』！\n\n【プレイヤー結果】\n`;
-
-    for (let p of ch.players) {
-        let isWin = (p.choice === resultType);
-        let winAmount = isWin ? p.bet * 2 : 0;
-        let choiceName = (p.choice === 'chou') ? '丁' : '半';
+    try {
+        let ch = chState[roomId];
+        if (!ch) return;
+        if (ch.timeoutId) clearTimeout(ch.timeoutId);
         
-        if (isWin) {
-            msg += `[piconname:${p.aid}]: 予想「${choiceName}」 ➡ 当たり！ 🎉 (+${winAmount} コイン)\n`;
-            try {
-                const { data } = await supabase.from('players').select('money').eq('account_id', p.aid).single();
-                if (data) await supabase.from('players').update({ money: data.money + winAmount }).eq('account_id', p.aid);
-            } catch(e){}
-        } else {
-            msg += `[piconname:${p.aid}]: 予想「${choiceName}」 ➡ はずれ\n`;
-        }
-    }
-    msg += `[/info]`;
-    await sendMessage(roomId, msg);
-    
-    chState[roomId] = { state: 'IDLE', host: null, players: [], timeoutId: null };
-};
+        let d1 = Math.floor(Math.random() * 6) + 1;
+        let d2 = Math.floor(Math.random() * 6) + 1;
+        let sum = d1 + d2;
+        let resultType = (sum % 2 === 0) ? 'chou' : 'han';
+        let resultName = (resultType === 'chou') ? '丁 (偶数)' : '半 (奇数)';
 
+        let msg = `[info][title]🎲 結果発表[/title]サイコロの目は【 ${d1} 】と【 ${d2} 】\n合計： ${sum} ➡ 『 ${resultName} 』！\n\n【プレイヤー結果】\n`;
+
+        for (let p of ch.players) {
+            let isWin = (p.choice === resultType);
+            let winAmount = isWin ? p.bet * 2 : 0;
+            let choiceName = (p.choice === 'chou') ? '丁' : '半';
+            
+            if (isWin) {
+                msg += `[piconname:${p.aid}]: 予想「${choiceName}」 ➡ 当たり！ 🎉 (+${winAmount} コイン)\n`;
+                try {
+                    const { data } = await supabase.from('players').select('money').eq('account_id', p.aid).single();
+                    if (data) await supabase.from('players').update({ money: data.money + winAmount }).eq('account_id', p.aid);
+                } catch(e){}
+            } else {
+                msg += `[piconname:${p.aid}]: 予想「${choiceName}」 ➡ はずれ\n`;
+            }
+        }
+        msg += `[/info]`;
+        await sendMessage(roomId, msg);
+        
+        chState[roomId] = { state: 'IDLE', host: null, players: [], timeoutId: null };
+    } catch (e) { console.error("Resolve Error:", e); }
+};
 
 // --- 防衛・連投機能 ---
 const checkSpam = (accountId) => {
@@ -499,6 +506,6 @@ setInterval(() => {
     }
 }, 10000);
 
-app.get('/', (req, res) => res.send('Bot is Live - V16 (Chouhan Edition)'));
+app.get('/', (req, res) => res.send('Bot is Live - V17 (Stable)'));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Run ${PORT}`));
