@@ -38,10 +38,22 @@ const verifySignature = (req) => {
     return signature === expected;
 };
 
+// --- ★新規: 確実に1分後に消すメッセージ関数 ---
+const sendTempMessage = async (roomId, text, ms = 60000) => {
+    try {
+        const res = await cw.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(text)}`);
+        if (res && res.data && res.data.message_id) {
+            setTimeout(() => {
+                cw.delete(`/rooms/${roomId}/messages/${res.data.message_id}`).catch(()=>{});
+            }, ms);
+        }
+    } catch(e) { console.error("Temp Msg Error:", e.message); }
+};
+
 const sendMessage = (roomId, text) => cw.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(text)}`).catch(()=>{});
 const deleteMessage = (roomId, messageId) => cw.delete(`/rooms/${roomId}/messages/${messageId}`).catch(()=>{});
 
-// --- 丁半ゲーム タイムアウト＆進行処理（安全装置追加） ---
+// --- 丁半ゲーム タイムアウト＆進行処理 ---
 const handleTimeout = async (roomId) => {
     try {
         let ch = chState[roomId];
@@ -50,8 +62,8 @@ const handleTimeout = async (roomId) => {
         if (ch.state === 'RECRUITING') {
             if (ch.players.length > 0) {
                 ch.state = 'BETTING';
-                await sendMessage(roomId, `[info]⏳ 2分経過したため募集を締め切り、丁半ゲームを開始します！\n参加者は /bet 掛け金 でベットしてください。(1分以内にベットがないと退出になります)[/info]`);
-                startTimer(roomId, 1200000);
+                await sendMessage(roomId, `[info]⏳ 1分経過したため募集を締め切り、丁半ゲームを開始します！\n参加者は /bet 掛け金 でベットしてください。(1分以内にベットがないと退出になります)[/info]`);
+                startTimer(roomId, 60000);
             } else {
                 ch.state = 'IDLE';
             }
@@ -64,11 +76,21 @@ const handleTimeout = async (roomId) => {
             }
             ch.players = activePlayers;
             if (kicked.length > 0) {
-                await sendMessage(roomId, `[info]⏳ ベット制限時間(2分)を超過したため、以下のプレイヤーを退出させました。\n${kicked.map(aid=>`[piconname:${aid}]`).join(' ')}[/info]`);
+                await sendMessage(roomId, `[info]⏳ ベット制限時間(1分)を超過したため、以下のプレイヤーを退出させました。\n${kicked.map(aid=>`[piconname:${aid}]`).join(' ')}[/info]`);
             }
-            if (ch.players.length === 0) {
-                await sendMessage(roomId, `[info]参加者がいなくなったため、丁半ゲームを中止します。[/info]`);
-                ch.state = 'IDLE';
+            
+            // ★追加: 2人以上いないと開始できない
+            if (ch.players.length < 2) {
+                for (let p of ch.players) {
+                    if (p.bet > 0) {
+                        try {
+                            const { data } = await supabase.from('players').select('money').eq('account_id', p.aid).single();
+                            if (data) await supabase.from('players').update({ money: data.money + p.bet }).eq('account_id', p.aid);
+                        } catch(e){}
+                    }
+                }
+                await sendMessage(roomId, `[info]参加者が2人未満になったため、丁半ゲームを中止し、掛け金を全額返還しました。[/info]`);
+                chState[roomId] = { state: 'IDLE', host: null, players: [], timeoutId: null };
             } else {
                 await moveToChoosing(roomId);
             }
@@ -86,11 +108,17 @@ const handleTimeout = async (roomId) => {
             }
             ch.players = activePlayers;
             if (kicked.length > 0) {
-                await sendMessage(roomId, `[info]⏳ 選択制限時間(2分)を超過したため、以下のプレイヤーを退出させ返金しました。\n${kicked.map(aid=>`[piconname:${aid}]`).join(' ')}[/info]`);
+                await sendMessage(roomId, `[info]⏳ 選択制限時間(1分)を超過したため、以下のプレイヤーを退出させ返金しました。\n${kicked.map(aid=>`[piconname:${aid}]`).join(' ')}[/info]`);
             }
-            if (ch.players.length === 0) {
-                await sendMessage(roomId, `[info]参加者がいなくなったため、丁半ゲームを中止します。[/info]`);
-                ch.state = 'IDLE';
+            if (ch.players.length < 2) {
+                for (let p of ch.players) {
+                    try {
+                        const { data } = await supabase.from('players').select('money').eq('account_id', p.aid).single();
+                        if (data) await supabase.from('players').update({ money: data.money + p.bet }).eq('account_id', p.aid);
+                    } catch(e){}
+                }
+                await sendMessage(roomId, `[info]参加者が2人未満になったため、丁半ゲームを中止し、返金しました。[/info]`);
+                chState[roomId] = { state: 'IDLE', host: null, players: [], timeoutId: null };
             } else {
                 await resolveChouhan(roomId);
             }
@@ -100,7 +128,7 @@ const handleTimeout = async (roomId) => {
     }
 };
 
-const startTimer = (roomId, ms = 120000) => {
+const startTimer = (roomId, ms = 60000) => {
     let ch = chState[roomId];
     if (ch.timeoutId) clearTimeout(ch.timeoutId);
     ch.timeoutId = setTimeout(() => { handleTimeout(roomId); }, ms);
@@ -112,7 +140,7 @@ const moveToChoosing = async (roomId) => {
         if (!ch) return;
         ch.state = 'CHOOSING';
         await sendMessage(roomId, `[info][title]🎲 丁半 選択[/title]全員のベットが完了しました！\nサイコロの合計が【丁(偶数)】か【半(奇数)】かを予想してください。\n\n/chou または /han と発言してください。(制限時間1分)[/info]`);
-        startTimer(roomId, 120000);
+        startTimer(roomId, 60000);
     } catch (e) { console.error("Choosing Error:", e); }
 };
 
@@ -158,7 +186,7 @@ const checkSpam = (accountId) => {
     if (!spamRecords[accountId]) spamRecords[accountId] = [];
     spamRecords[accountId].push(now);
     spamRecords[accountId] = spamRecords[accountId].filter(t => now - t <= 5000);
-    if (spamRecords[accountId].length >= 8) {
+    if (spamRecords[accountId].length >= 10) {
         spamRecords[accountId] = [];
         return true;
     }
@@ -210,6 +238,7 @@ const runPatrol = async (roomId) => {
     } catch (e) {}
 };
 
+// --- 深夜0時リセット＆宝くじ抽選処理 ---
 const checkDailyReset = async (roomId) => {
     try {
         const now = new Date();
@@ -226,7 +255,56 @@ const checkDailyReset = async (roomId) => {
         localLastResetDate = todayStr;
         await supabase.from('players').update({ slot_count: 0 }).neq('account_id', '0');
         await supabase.from('config').upsert({ key: 'last_reset_date', value: todayStr });
-        if (roomId) await sendMessage(roomId, `[info][title]🔄 日替わりリセット[/title]深夜0時になりました。\n全プレイヤーの【スロット回数】が 0 にリセットされました！[/info]`);
+        
+        let resetMsg = `[info][title]🔄 日替わりリセット[/title]深夜0時になりました。\n全プレイヤーの【スロット回数】が 0 にリセットされました！\n\n`;
+
+        // 宝くじ抽選
+        try {
+            const { data: lotData } = await supabase.from('config').select('value').eq('key', 'lottery_tickets').single();
+            let tickets = lotData ? JSON.parse(lotData.value) : [];
+            if (tickets.length > 0) {
+                let winNum = Math.floor(Math.random() * 9999) + 1; // 1~9999
+                resetMsg += `[title]🎯 本日の宝くじ抽選結果[/title]当選番号は【 ${winNum} 】です！\n\n`;
+                let payouts = {};
+                let winners = [];
+                
+                const checkPrize = (num, win) => {
+                    if (num === win) return { prize: 30000, name: '1等' };
+                    let prev = win - 1 < 1 ? 9999 : win - 1;
+                    let next = win + 1 > 9999 ? 1 : win + 1;
+                    if (num === prev || num === next) return { prize: 15000, name: '前後賞' };
+                    if (num % 1000 === win % 1000) return { prize: 10000, name: '2等' }; // 下3桁
+                    if (num % 100 === win % 100) return { prize: 5000, name: '3等' };    // 下2桁
+                    if (num % 10 === win % 10) return { prize: 1000, name: '4等' };      // 下1桁
+                    return null;
+                };
+                
+                for (let t of tickets) {
+                    let res = checkPrize(t.num, winNum);
+                    if (res) {
+                        winners.push({ aid: t.aid, num: t.num, ...res });
+                        payouts[t.aid] = (payouts[t.aid] || 0) + res.prize;
+                    }
+                }
+                
+                if (winners.length > 0) {
+                    for (let aid in payouts) {
+                        const { data: p } = await supabase.from('players').select('money').eq('account_id', aid).single();
+                        if (p) await supabase.from('players').update({ money: p.money + payouts[aid] }).eq('account_id', aid);
+                    }
+                    winners.sort((a, b) => b.prize - a.prize);
+                    for (let w of winners) {
+                        resetMsg += `[piconname:${w.aid}]: ${w.num} ➡ ${w.name} (+${w.prize}コイン)\n`;
+                    }
+                } else {
+                    resetMsg += `本日の当選者は残念ながらいませんでした。\n`;
+                }
+                await supabase.from('config').upsert({ key: 'lottery_tickets', value: '[]' });
+            }
+        } catch(e) { console.error("Lottery Error", e); }
+
+        resetMsg += `[/info]`;
+        if (roomId) await sendMessage(roomId, resetMsg);
     } catch (e) {}
 };
 
@@ -270,6 +348,27 @@ app.post('/webhook', (req, res) => {
             const isBlacklistCmd = /(^|\n)\/blacklist(\s|$)/.test(body);
             const isReblacklistCmd = /(^|\n)\/reblacklist(\s|$)/.test(body);
 
+            // ★ ランキング除外コマンド
+            if (body.startsWith('/remove-rank ')) {
+                const isAdmin = await isUserAdmin(roomId, senderId);
+                if (!isAdmin) return;
+                const targetAid = body.split(/\s+/)[1];
+                if (!targetAid) return;
+                
+                const { data: excData } = await supabase.from('config').select('value').eq('key', 'rank_excluded').single();
+                let excluded = excData ? JSON.parse(excData.value) : [];
+                
+                if (excluded.includes(targetAid)) {
+                    excluded = excluded.filter(id => id !== targetAid);
+                    await sendTempMessage(roomId, `[info][piconname:${targetAid}] をランキング除外から【解除】しました。[/info]`);
+                } else {
+                    excluded.push(targetAid);
+                    await sendTempMessage(roomId, `[info][piconname:${targetAid}] をランキングから【除外】しました。[/info]`);
+                }
+                await supabase.from('config').upsert({ key: 'rank_excluded', value: JSON.stringify(excluded) });
+                return;
+            }
+
             if (isBlacklistCmd || isReblacklistCmd) {
                 const isAdmin = await isUserAdmin(roomId, senderId);
                 if (!isAdmin) return;
@@ -288,22 +387,21 @@ app.post('/webhook', (req, res) => {
                 if (commandType === 'add' && targetAid) {
                     const { data: existing } = await supabase.from('blacklist').select('account_id').eq('account_id', targetAid);
                     if (existing && existing.length > 0) {
-                        await sendMessage(roomId, `[info][piconname:${targetAid}] は【既に】ブラックリストに登録されています。[/info]`);
+                        await sendTempMessage(roomId, `[info][piconname:${targetAid}] は【既に】ブラックリストに登録されています。[/info]`);
                     } else {
                         await supabase.from('blacklist').insert({ account_id: targetAid });
                         await updateRoomMembers(roomId, [targetAid], 'kick');
-                        await sendMessage(roomId, `[info][piconname:${targetAid}] をブラックリストに新規登録し、強制追放しました。[/info]`);
+                        await sendTempMessage(roomId, `[info][piconname:${targetAid}] をブラックリストに新規登録し、強制追放しました。[/info]`);
                     }
                 } 
                 else if (commandType === 'remove' && targetAid) {
                     await supabase.from('blacklist').delete().eq('account_id', targetAid);
-                    await sendMessage(roomId, `[info][piconname:${targetAid}] をブラックリストから解除しました。[/info]`);
+                    await sendTempMessage(roomId, `[info][piconname:${targetAid}] をブラックリストから解除しました。[/info]`);
                 } 
                 else if (commandType === 'list') {
                     const { data } = await supabase.from('blacklist').select('account_id');
                     const listStr = data && data.length > 0 ? data.map(d => `[piconname:${d.account_id}] (ID: ${d.account_id})`).join('\n') : "登録なし";
-                    const resMsg = await sendMessage(roomId, `[info][title]ブラックリスト一覧[/title]${listStr}\n\n※1分後に自動消去されます[/info]`);
-                    if (resMsg && resMsg.data) setTimeout(() => deleteMessage(roomId, resMsg.data.message_id), 60000);
+                    await sendTempMessage(roomId, `[info][title]ブラックリスト一覧[/title]${listStr}\n\n※1分後に自動消去されます[/info]`);
                 }
                 return;
             }
@@ -330,22 +428,57 @@ app.post('/webhook', (req, res) => {
                 const amount = parseInt(parts[2], 10);
                 if (!targetAid || isNaN(amount) || amount <= 0) return;
                 const { data: sender } = await supabase.from('players').select('*').eq('account_id', senderId).single();
-                if (!sender || sender.money < amount) return await sendMessage(roomId, `[rp aid=${senderId}] 持ち金が足りません！`);
+                if (!sender || sender.money < amount) return await sendTempMessage(roomId, `[rp aid=${senderId}] 持ち金が足りません！`);
                 
                 const { data: receiver } = await supabase.from('players').select('*').eq('account_id', targetAid).single();
                 await supabase.from('players').update({ money: sender.money - amount }).eq('account_id', senderId);
                 if (receiver) await supabase.from('players').update({ money: receiver.money + amount }).eq('account_id', targetAid);
                 else await supabase.from('players').insert({ account_id: targetAid, money: amount, debt: 0, slot_count: 0 });
-                await sendMessage(roomId, `[info][piconname:${senderId}] ➡ [piconname:${targetAid}]\n${amount} コインを送金しました。[/info]`);
+                await sendTempMessage(roomId, `[info][piconname:${senderId}] ➡ [piconname:${targetAid}]\n${amount} コインを送金しました。[/info]`);
+                return;
+            }
+
+            // --- ★新規: 宝くじ購入 (/buy-lot 1234) ---
+            const lotMatch = body.match(/(^|\n)\/buy-lot\s+([0-9]+)/);
+            if (gambleActive && lotMatch) {
+                const num = parseInt(lotMatch[2], 10);
+                if (num >= 1 && num <= 9999) {
+                    const { data } = await supabase.from('players').select('money').eq('account_id', senderId).single();
+                    if (!data || data.money < 100) return await sendTempMessage(roomId, `[rp aid=${senderId}] お金が足りません！宝くじは1枚100コインです。`);
+                    
+                    await supabase.from('players').update({ money: data.money - 100 }).eq('account_id', senderId);
+                    
+                    const { data: lotData } = await supabase.from('config').select('value').eq('key', 'lottery_tickets').single();
+                    let tickets = lotData ? JSON.parse(lotData.value) : [];
+                    tickets.push({ aid: senderId, num: num });
+                    await supabase.from('config').upsert({ key: 'lottery_tickets', value: JSON.stringify(tickets) });
+                    
+                    await sendTempMessage(roomId, `[info][piconname:${senderId}] 宝くじ【 ${num} 】を100コインで購入しました！\n(抽選は深夜0時)[/info]`);
+                }
                 return;
             }
 
             if (body.trim() === '/money-rank') {
-                const { data } = await supabase.from('players').select('*').order('money', { ascending: false }).limit(10);
-                const listStr = data && data.length > 0 
-                    ? data.map((d, i) => `${i+1}位: [piconname:${d.account_id}] - ${d.money} コイン`).join('\n') : "データなし";
-                const resMsg = await sendMessage(roomId, `[info][title]💰 所持金ランキング TOP10[/title]${listStr}\n\n※このメッセージは5分後に消去されます[/info]`);
-                if (resMsg && resMsg.data) setTimeout(() => deleteMessage(roomId, resMsg.data.message_id), 300000);
+                const { data: excData } = await supabase.from('config').select('value').eq('key', 'rank_excluded').single();
+                let excluded = excData ? JSON.parse(excData.value) : [];
+
+                const { data } = await supabase.from('players').select('*').order('money', { ascending: false });
+                const filtered = data ? data.filter(d => !excluded.includes(d.account_id)).slice(0, 10) : [];
+
+                const listStr = filtered.length > 0 
+                    ? filtered.map((d, i) => `${i+1}位: [piconname:${d.account_id}] - ${d.money} コイン`).join('\n') : "データなし";
+                await sendTempMessage(roomId, `[info][title]💰 所持金ランキング TOP10[/title]${listStr}\n\n※このメッセージは1分後に自動消去されます[/info]`);
+                return;
+            }
+
+            if (body.trim() === '/status') {
+                const { data } = await supabase.from('players').select('*').eq('account_id', senderId).single();
+                if (data) {
+                    const remainSlot = Math.max(0, 3 - data.slot_count);
+                    await sendTempMessage(roomId, `[info][title]📊 ステータス[/title][piconname:${senderId}] さんの情報\n💰 所持金: ${data.money} コイン\n🎰 本日のスロット残り: ${remainSlot} 回\n\n※1分後に自動消去されます[/info]`);
+                } else {
+                    await sendTempMessage(roomId, `[info][title]📊 ステータス[/title][piconname:${senderId}] さんのデータはまだありません。\n(※ギャンブル有効時に発言すると作成されます)\n\n※1分後に自動消去されます[/info]`);
+                }
                 return;
             }
 
@@ -355,8 +488,8 @@ app.post('/webhook', (req, res) => {
                 const betAmount = parseInt(slotMatch[2], 10);
                 if (betAmount > 0) {
                     const { data } = await supabase.from('players').select('*').eq('account_id', senderId).single();
-                    if (!data || data.money < betAmount) return await sendMessage(roomId, `[rp aid=${senderId}] お金が足りません！ (所持: ${data ? data.money : 0}コイン)`);
-                    if (data.slot_count >= 3) return await sendMessage(roomId, `[rp aid=${senderId}] 制限到達！スロットは1日一人3回までです。（深夜0時リセット）`);
+                    if (!data || data.money < betAmount) return await sendTempMessage(roomId, `[rp aid=${senderId}] お金が足りません！ (所持: ${data ? data.money : 0}コイン)`);
+                    if (data.slot_count >= 3) return await sendTempMessage(roomId, `[rp aid=${senderId}] 制限到達！スロットは1日一人3回までです。（深夜0時リセット）`);
                     
                     let newMoney = data.money - betAmount;
                     let newCount = data.slot_count + 1;
@@ -389,7 +522,7 @@ app.post('/webhook', (req, res) => {
                 ch.state = 'RECRUITING';
                 ch.host = senderId;
                 ch.players = [{ aid: senderId, bet: 0, choice: null }];
-                await sendMessage(roomId, `[info][title]🎲 丁半ゲーム募集開始[/title]丁半ゲームを開始しました！\n参加者は /join chouhan と入力してください。(現在 1/4人)\nホスト([piconname:${senderId}])は /startchouhan で強制開始できます。\n※1分経過で自動開始します。[/info]`);
+                await sendMessage(roomId, `[info][title]🎲 丁半ゲーム募集開始[/title]丁半ゲームを開始しました！\n参加者は /join chouhan と入力してください。(現在 1人)\nホスト([piconname:${senderId}])は /startchouhan で強制開始できます。\n※1分経過で自動開始します。[/info]`);
                 startTimer(roomId, 60000);
                 return;
             }
@@ -399,20 +532,17 @@ app.post('/webhook', (req, res) => {
                 if (ch.players.find(p => p.aid === senderId)) return;
                 ch.players.push({ aid: senderId, bet: 0, choice: null });
                 
-                let msg = `[info][piconname:${senderId}] が丁半に参加しました！ (現在 ${ch.players.length}/4人)[/info]`;
-                if (ch.players.length >= 4) {
-                    ch.state = 'BETTING';
-                    msg += `\n[info][title]ベット受付開始[/title]4人集まりました！\n参加者は /bet 掛け金 でベットしてください。(1分以内)[/info]`;
-                    await sendMessage(roomId, msg);
-                    startTimer(roomId, 60000);
-                } else {
-                    await sendMessage(roomId, msg);
-                }
+                let msg = `[info][piconname:${senderId}] が丁半に参加しました！ (現在 ${ch.players.length}人)[/info]`;
+                await sendMessage(roomId, msg);
                 return;
             }
 
             if (body.trim() === '/startchouhan' && gambleActive) {
                 if (ch.state !== 'RECRUITING' || ch.host !== senderId) return;
+                if (ch.players.length < 2) {
+                    await sendTempMessage(roomId, `[info]丁半ゲームは2人以上でないと開始できません。[/info]`);
+                    return;
+                }
                 ch.state = 'BETTING';
                 await sendMessage(roomId, `[info][title]ベット受付開始[/title]ホストが強制開始しました！\n参加者は /bet 掛け金 でベットしてください。(1分以内)[/info]`);
                 startTimer(roomId, 60000);
@@ -438,9 +568,9 @@ app.post('/webhook', (req, res) => {
                             return;
                         }
 
-                        if (ch.state === 'BETTING' && ch.players.every(pl => pl.bet > 0)) {
+                        if (ch.state === 'BETTING' && ch.players.length >= 2 && ch.players.every(pl => pl.bet > 0)) {
                             await moveToChoosing(roomId);
-                        } else if (ch.state === 'CHOOSING' && ch.players.every(pl => pl.choice)) {
+                        } else if (ch.state === 'CHOOSING' && ch.players.length >= 2 && ch.players.every(pl => pl.choice)) {
                             await resolveChouhan(roomId);
                         }
                     }
@@ -458,13 +588,13 @@ app.post('/webhook', (req, res) => {
                 if (betAmount <= 0) return;
                 
                 const { data } = await supabase.from('players').select('money').eq('account_id', senderId).single();
-                if (!data || data.money < betAmount) return await sendMessage(roomId, `[rp aid=${senderId}] お金が足りません！`);
+                if (!data || data.money < betAmount) return await sendTempMessage(roomId, `[rp aid=${senderId}] お金が足りません！`);
                 
                 await supabase.from('players').update({ money: data.money - betAmount }).eq('account_id', senderId);
                 p.bet = betAmount;
                 await sendMessage(roomId, `[info][piconname:${senderId}] が ${betAmount} コインをベットしました！[/info]`);
                 
-                if (ch.players.every(pl => pl.bet > 0)) {
+                if (ch.players.length >= 2 && ch.players.every(pl => pl.bet > 0)) {
                     await moveToChoosing(roomId);
                 }
                 return;
@@ -479,7 +609,7 @@ app.post('/webhook', (req, res) => {
                 let choiceName = p.choice === 'chou' ? '丁' : '半';
                 await sendMessage(roomId, `[info][piconname:${senderId}] が「${choiceName}」を選択しました！[/info]`);
                 
-                if (ch.players.every(pl => pl.choice)) {
+                if (ch.players.length >= 2 && ch.players.every(pl => pl.choice)) {
                     await resolveChouhan(roomId);
                 }
                 return;
@@ -506,6 +636,6 @@ setInterval(() => {
     }
 }, 10000);
 
-app.get('/', (req, res) => res.send('Bot is Live - V17 (Stable)'));
+app.get('/', (req, res) => res.send('Bot is Live - V19 (Ultimate Casino)'));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Run ${PORT}`));
