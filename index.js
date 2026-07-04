@@ -38,7 +38,7 @@ const verifySignature = (req) => {
     return signature === expected;
 };
 
-// --- ★新規: 確実に1分後に消すメッセージ関数 ---
+// --- メッセージ送信・自動削除 ---
 const sendTempMessage = async (roomId, text, ms = 60000) => {
     try {
         const res = await cw.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(text)}`);
@@ -53,7 +53,7 @@ const sendTempMessage = async (roomId, text, ms = 60000) => {
 const sendMessage = (roomId, text) => cw.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(text)}`).catch(()=>{});
 const deleteMessage = (roomId, messageId) => cw.delete(`/rooms/${roomId}/messages/${messageId}`).catch(()=>{});
 
-// --- 丁半ゲーム タイムアウト＆進行処理 ---
+// --- 丁半ゲーム 進行処理 ---
 const handleTimeout = async (roomId) => {
     try {
         let ch = chState[roomId];
@@ -79,7 +79,6 @@ const handleTimeout = async (roomId) => {
                 await sendMessage(roomId, `[info]⏳ ベット制限時間(1分)を超過したため、以下のプレイヤーを退出させました。\n${kicked.map(aid=>`[piconname:${aid}]`).join(' ')}[/info]`);
             }
             
-            // ★追加: 2人以上いないと開始できない
             if (ch.players.length < 2) {
                 for (let p of ch.players) {
                     if (p.bet > 0) {
@@ -141,7 +140,7 @@ const moveToChoosing = async (roomId) => {
         ch.state = 'CHOOSING';
         await sendMessage(roomId, `[info][title]🎲 丁半 選択[/title]全員のベットが完了しました！\nサイコロの合計が【丁(偶数)】か【半(奇数)】かを予想してください。\n\n/chou または /han と発言してください。(制限時間1分)[/info]`);
         startTimer(roomId, 60000);
-    } catch (e) { console.error("Choosing Error:", e); }
+    } catch (e) {}
 };
 
 const resolveChouhan = async (roomId) => {
@@ -175,9 +174,8 @@ const resolveChouhan = async (roomId) => {
         }
         msg += `[/info]`;
         await sendMessage(roomId, msg);
-        
         chState[roomId] = { state: 'IDLE', host: null, players: [], timeoutId: null };
-    } catch (e) { console.error("Resolve Error:", e); }
+    } catch (e) {}
 };
 
 // --- 防衛・連投機能 ---
@@ -238,7 +236,7 @@ const runPatrol = async (roomId) => {
     } catch (e) {}
 };
 
-// --- 深夜0時リセット＆宝くじ抽選処理 ---
+// --- 深夜0時リセット＆宝くじ抽選 ---
 const checkDailyReset = async (roomId) => {
     try {
         const now = new Date();
@@ -273,9 +271,9 @@ const checkDailyReset = async (roomId) => {
                     let prev = win - 1 < 1 ? 9999 : win - 1;
                     let next = win + 1 > 9999 ? 1 : win + 1;
                     if (num === prev || num === next) return { prize: 15000, name: '前後賞' };
-                    if (num % 1000 === win % 1000) return { prize: 10000, name: '2等' }; // 下3桁
-                    if (num % 100 === win % 100) return { prize: 5000, name: '3等' };    // 下2桁
-                    if (num % 10 === win % 10) return { prize: 1000, name: '4等' };      // 下1桁
+                    if (num % 1000 === win % 1000) return { prize: 10000, name: '2等' }; 
+                    if (num % 100 === win % 100) return { prize: 5000, name: '3等' };    
+                    if (num % 10 === win % 10) return { prize: 1000, name: '4等' };      
                     return null;
                 };
                 
@@ -299,7 +297,7 @@ const checkDailyReset = async (roomId) => {
                 } else {
                     resetMsg += `本日の当選者は残念ながらいませんでした。\n`;
                 }
-                await supabase.from('config').upsert({ key: 'lottery_tickets', value: '[]' });
+                await supabase.from('config').upsert({ key: 'lottery_tickets', value: '[]' }); // リセット
             }
         } catch(e) { console.error("Lottery Error", e); }
 
@@ -344,11 +342,39 @@ app.post('/webhook', (req, res) => {
                 }
             }
 
-            // --- コマンド判定 ---
+            // --- コマンド一覧 (/help-gya) ---
+            if (body.trim() === '/help-gya') {
+                const helpMsg = `[info][title]🎰 ギャンブル機能 コマンド一覧[/title]
+[b]【 基本コマンド 】[/b]
+/status : 自分の所持金・スロット残り回数を確認
+/give [アカウントID] [金額] : 他の人にコインを送金
+/money-rank : 所持金ランキングTOP10を表示 (1分で消去)
+
+[b]【 ゲーム 】[/b]
+/slot [掛け金] : スロットを回す (1日3回まで)
+/buy-lot [1〜9999の数字] : 宝くじを1枚100コインで購入 (深夜0時抽選、同じ数字は早い者勝ち)
+
+[b]【 🎲 丁半ゲーム 】[/b]
+/chouhan : 丁半ゲームの募集を開始
+/join chouhan : ゲームに参加
+/bet [掛け金] : コインを掛ける
+/chou または /han : 丁(偶数)か半(奇数)を予想する
+/leave : ゲームから退出する (お金は返還されます)
+
+[b]【 管理者専用 】[/b]
+/st-gya : ギャンブル機能の有効化
+/fi-gya : ギャンブル機能の無効化
+/remove-rank [アカウントID] : ランキングから指定の人を除外・解除
+[/info]`;
+                await sendTempMessage(roomId, helpMsg, 120000); // 2分で消去
+                return;
+            }
+
+            // --- ブラックリスト系 コマンド ---
             const isBlacklistCmd = /(^|\n)\/blacklist(\s|$)/.test(body);
             const isReblacklistCmd = /(^|\n)\/reblacklist(\s|$)/.test(body);
 
-            // ★ ランキング除外コマンド
+            // ランキング除外コマンド
             if (body.startsWith('/remove-rank ')) {
                 const isAdmin = await isUserAdmin(roomId, senderId);
                 if (!isAdmin) return;
@@ -438,22 +464,30 @@ app.post('/webhook', (req, res) => {
                 return;
             }
 
-            // --- ★新規: 宝くじ購入 (/buy-lot 1234) ---
+            // --- 宝くじ購入 (/buy-lot 1234) ---
             const lotMatch = body.match(/(^|\n)\/buy-lot\s+([0-9]+)/);
             if (gambleActive && lotMatch) {
                 const num = parseInt(lotMatch[2], 10);
                 if (num >= 1 && num <= 9999) {
+                    const { data: lotData } = await supabase.from('config').select('value').eq('key', 'lottery_tickets').single();
+                    let tickets = lotData ? JSON.parse(lotData.value) : [];
+
+                    // ★重複購入の防止
+                    if (tickets.some(t => t.num === num)) {
+                        return await sendTempMessage(roomId, `[rp aid=${senderId}] 宝くじ番号【 ${num} 】は既に買われています！別の番号を選んでください。`);
+                    }
+
                     const { data } = await supabase.from('players').select('money').eq('account_id', senderId).single();
                     if (!data || data.money < 100) return await sendTempMessage(roomId, `[rp aid=${senderId}] お金が足りません！宝くじは1枚100コインです。`);
                     
                     await supabase.from('players').update({ money: data.money - 100 }).eq('account_id', senderId);
                     
-                    const { data: lotData } = await supabase.from('config').select('value').eq('key', 'lottery_tickets').single();
-                    let tickets = lotData ? JSON.parse(lotData.value) : [];
                     tickets.push({ aid: senderId, num: num });
                     await supabase.from('config').upsert({ key: 'lottery_tickets', value: JSON.stringify(tickets) });
                     
                     await sendTempMessage(roomId, `[info][piconname:${senderId}] 宝くじ【 ${num} 】を100コインで購入しました！\n(抽選は深夜0時)[/info]`);
+                } else {
+                    await sendTempMessage(roomId, `[rp aid=${senderId}] 宝くじの番号は 1 〜 9999 の間で指定してください！`);
                 }
                 return;
             }
@@ -592,7 +626,7 @@ app.post('/webhook', (req, res) => {
                 
                 await supabase.from('players').update({ money: data.money - betAmount }).eq('account_id', senderId);
                 p.bet = betAmount;
-                await sendMessage(roomId, `[info][piconname:${senderId}] が ${betAmount} コインをベットしました！[/info]`);
+                await sendTempMessage(roomId, `[info][piconname:${senderId}] が ${betAmount} コインをベットしました！[/info]`);
                 
                 if (ch.players.length >= 2 && ch.players.every(pl => pl.bet > 0)) {
                     await moveToChoosing(roomId);
@@ -607,7 +641,7 @@ app.post('/webhook', (req, res) => {
                 
                 p.choice = body.trim() === '/chou' ? 'chou' : 'han';
                 let choiceName = p.choice === 'chou' ? '丁' : '半';
-                await sendMessage(roomId, `[info][piconname:${senderId}] が「${choiceName}」を選択しました！[/info]`);
+                await sendTempMessage(roomId, `[info][piconname:${senderId}] が「${choiceName}」を選択しました！[/info]`);
                 
                 if (ch.players.length >= 2 && ch.players.every(pl => pl.choice)) {
                     await resolveChouhan(roomId);
@@ -636,6 +670,6 @@ setInterval(() => {
     }
 }, 10000);
 
-app.get('/', (req, res) => res.send('Bot is Live - V19 (Ultimate Casino)'));
+app.get('/', (req, res) => res.send('Bot is Live - V20 (Final Casino Edition)'));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Run ${PORT}`));
