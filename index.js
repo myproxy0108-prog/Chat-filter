@@ -50,8 +50,8 @@ const handleTimeout = async (roomId) => {
         if (ch.state === 'RECRUITING') {
             if (ch.players.length > 0) {
                 ch.state = 'BETTING';
-                await sendMessage(roomId, `[info]⏳ 1分経過したため募集を締め切り、丁半ゲームを開始します！\n参加者は /bet 掛け金 でベットしてください。(1分以内にベットがないと退出になります)[/info]`);
-                startTimer(roomId, 60000);
+                await sendMessage(roomId, `[info]⏳ 2分経過したため募集を締め切り、丁半ゲームを開始します！\n参加者は /bet 掛け金 でベットしてください。(1分以内にベットがないと退出になります)[/info]`);
+                startTimer(roomId, 1200000);
             } else {
                 ch.state = 'IDLE';
             }
@@ -64,7 +64,7 @@ const handleTimeout = async (roomId) => {
             }
             ch.players = activePlayers;
             if (kicked.length > 0) {
-                await sendMessage(roomId, `[info]⏳ ベット制限時間(1分)を超過したため、以下のプレイヤーを退出させました。\n${kicked.map(aid=>`[piconname:${aid}]`).join(' ')}[/info]`);
+                await sendMessage(roomId, `[info]⏳ ベット制限時間(2分)を超過したため、以下のプレイヤーを退出させました。\n${kicked.map(aid=>`[piconname:${aid}]`).join(' ')}[/info]`);
             }
             if (ch.players.length === 0) {
                 await sendMessage(roomId, `[info]参加者がいなくなったため、丁半ゲームを中止します。[/info]`);
@@ -86,7 +86,7 @@ const handleTimeout = async (roomId) => {
             }
             ch.players = activePlayers;
             if (kicked.length > 0) {
-                await sendMessage(roomId, `[info]⏳ 選択制限時間(1分)を超過したため、以下のプレイヤーを退出させ返金しました。\n${kicked.map(aid=>`[piconname:${aid}]`).join(' ')}[/info]`);
+                await sendMessage(roomId, `[info]⏳ 選択制限時間(2分)を超過したため、以下のプレイヤーを退出させ返金しました。\n${kicked.map(aid=>`[piconname:${aid}]`).join(' ')}[/info]`);
             }
             if (ch.players.length === 0) {
                 await sendMessage(roomId, `[info]参加者がいなくなったため、丁半ゲームを中止します。[/info]`);
@@ -100,7 +100,7 @@ const handleTimeout = async (roomId) => {
     }
 };
 
-const startTimer = (roomId, ms = 60000) => {
+const startTimer = (roomId, ms = 120000) => {
     let ch = chState[roomId];
     if (ch.timeoutId) clearTimeout(ch.timeoutId);
     ch.timeoutId = setTimeout(() => { handleTimeout(roomId); }, ms);
@@ -112,7 +112,7 @@ const moveToChoosing = async (roomId) => {
         if (!ch) return;
         ch.state = 'CHOOSING';
         await sendMessage(roomId, `[info][title]🎲 丁半 選択[/title]全員のベットが完了しました！\nサイコロの合計が【丁(偶数)】か【半(奇数)】かを予想してください。\n\n/chou または /han と発言してください。(制限時間1分)[/info]`);
-        startTimer(roomId, 60000);
+        startTimer(roomId, 120000);
     } catch (e) { console.error("Choosing Error:", e); }
 };
 
@@ -158,7 +158,7 @@ const checkSpam = (accountId) => {
     if (!spamRecords[accountId]) spamRecords[accountId] = [];
     spamRecords[accountId].push(now);
     spamRecords[accountId] = spamRecords[accountId].filter(t => now - t <= 5000);
-    if (spamRecords[accountId].length >= 10) {
+    if (spamRecords[accountId].length >= 8) {
         spamRecords[accountId] = [];
         return true;
     }
