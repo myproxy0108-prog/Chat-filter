@@ -668,7 +668,7 @@ setInterval(() => {
         runPatrol(TARGET_ROOM_ID);
         checkDailyReset(TARGET_ROOM_ID);
     }
-}, 10000);
+}, 500);
 // ローカル実行（node index.js）の時だけ listen し、Vercel上では export する
 if (process.env.NODE_ENV !== 'production') {
     const PORT = process.env.PORT || 3000;
