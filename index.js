@@ -577,8 +577,7 @@ app.post('/webhook', (req, res) => {
     })();
 });
 
-if (process.env.NODE_ENV !== 'production') {
-    const PORT = process.env.PORT || 3000;
-    app.listen(PORT, () => console.log(`Live V27`));
-}
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Run ${PORT}`));
+
 module.exports = app;
