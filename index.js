@@ -313,23 +313,23 @@ app.post('/webhook', (req, res) => {
             // --- コマンド一覧 (/help-gya) ---
             if (body.trim() === '/help-gya') {
                 const helpMsg = `[info][title]🎰 ギャンブル機能 コマンド一覧[/title]
-[b]【 基本コマンド 】[/b]
+【 基本コマンド 】
 /status : 自分の所持金・スロット残り回数を確認
 /give [金額] : 返信で相手を指定してコインを送金
 /money-rank : 所持金ランキングTOP10を表示 (1分で消去)
 
-[b]【 ゲーム 】[/b]
+【 ゲーム 】
 /slot [掛け金] : スロットを回す (1日3回まで)
 /buy-lot [1〜9999の数字] : 宝くじを1枚100コインで購入 (深夜0時抽選、同じ数字は早い者勝ち)
 
-[b]【 🎲 丁半ゲーム 】[/b]
+【 🎲 丁半ゲーム 】
 /chouhan : 丁半ゲームの募集を開始
 /join chouhan : ゲームに参加
 /bet [掛け金] : コインを掛ける
 /chou または /han : 丁(偶数)か半(奇数)を予想する
 /leave : ゲームから退出する (お金は返還されます)
 
-[b]【 管理者専用 】[/b]
+【 管理者専用 】
 /st-gya : ギャンブル機能の有効化
 /fi-gya : ギャンブル機能の無効化
 /remove-rank : 返信で相手を指定してランキングから除外・解除
@@ -636,8 +636,8 @@ app.post('/webhook', (req, res) => {
 });
 
 // Vercel用のExport
-if (process.env.NODE_ENV !== 'production') {
-    const PORT = process.env.PORT || 3000;
-    app.listen(PORT, () => console.log(`Local Run ${PORT}`));
-}
+// Render & Vercel 両対応の起動コード
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Run ${PORT}`));
+
 module.exports = app;
