@@ -668,11 +668,8 @@ setInterval(() => {
         runPatrol(TARGET_ROOM_ID);
         checkDailyReset(TARGET_ROOM_ID);
     }
-}, 500);
-// ローカル実行（node index.js）の時だけ listen し、Vercel上では export する
-if (process.env.NODE_ENV !== 'production') {
-    const PORT = process.env.PORT || 3000;
-    app.listen(PORT, () => console.log(`Local Run ${PORT}`));
-}
+}, 10000);
 
-module.exports = app;
+app.get('/', (req, res) => res.send('Bot is Live - V20 (Final Casino Edition)'));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Run ${PORT}`));
