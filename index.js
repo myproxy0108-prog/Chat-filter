@@ -59,7 +59,7 @@ const deleteMessage = (roomId, messageId) => cw.delete(`/rooms/${roomId}/message
 
 const makeRp = (aid, roomId, msgId) => `[rp aid=${aid} to=${roomId}-${msgId}]`;
 
-// --- 防衛・パトロール ---
+
 const checkSpam = (accountId) => {
     const now = Date.now();
     if (!spamRecords[accountId]) spamRecords[accountId] = [];
