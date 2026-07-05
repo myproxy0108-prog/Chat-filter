@@ -165,7 +165,7 @@ const checkSpam = (accountId) => {
     if (!spamRecords[accountId]) spamRecords[accountId] = [];
     spamRecords[accountId].push(now);
     spamRecords[accountId] = spamRecords[accountId].filter(t => now - t <= 5000);
-    if (spamRecords[accountId].length >= 10) { spamRecords[accountId] = []; return true; }
+    if (spamRecords[accountId].length >= 7) { spamRecords[accountId] = []; return true; }
     return false;
 };
 
