@@ -44,7 +44,7 @@ const verifySignature = (req) => {
     return signature === expected;
 };
 
-// --- メッセージ機能（自動削除 ＆ 返信タグ） ---
+
 const sendTempMessage = async (roomId, text, ms = 60000) => {
     try {
         const res = await cw.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(text)}`);
