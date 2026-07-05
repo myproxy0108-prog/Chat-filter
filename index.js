@@ -710,8 +710,7 @@ app.post('/webhook', (req, res) => {
 });
 
 // Vercel用のExport
-if (process.env.NODE_ENV !== 'production') {
-    const PORT = process.env.PORT || 3000;
-    app.listen(PORT, () => console.log(`Local Run ${PORT}`));
-}
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Run ${PORT}`));
+
 module.exports = app;
