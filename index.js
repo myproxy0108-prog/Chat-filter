@@ -453,7 +453,7 @@ app.post('/webhook', (req, res) => {
             const sM = body.match(/(^|\n)\/slot\s+(max|half|[0-9]+)/);
             if (sM && isGamble && p) {
                 if (p.slot_count >= 3) return sendTemp(rid, `[info]⚠️ ${mkRp(sId, rid, mId)}\n本日のスロットは上限(1日3回)に達しました！[/info]`);
-                if (Date.now() - (p.last_slot_time || 0) < 600000) return sendTemp(rid, `[info]⚠️ ${mkRp(sId, rid, mId)}\nスロット休憩中(10分間隔)です！[/info]`);
+                if (Date.now() - (p.last_slot_time || 0) < 60000) return sendTemp(rid, `[info]⚠️ ${mkRp(sId, rid, mId)}\nスロット休憩中(10分間隔)です！[/info]`);
                 let bet = sM[2] === 'max' ? myM : (sM[2] === 'half' ? Math.floor(myM/2) : parseInt(sM[2], 10));
                 if (bet > 0 && myM >= bet) {
                     await sb.from('players').update({ money: myM - bet, last_slot_time: Date.now(), slot_count: p.slot_count + 1 }).eq('account_id', sId);
@@ -498,11 +498,11 @@ app.post('/webhook', (req, res) => {
 
             // --- 🎲 ゲーム共通・進行 ---
             const { data: lg } = await sb.from('config').select('value').eq('key', 'last_game_time').single();
-            const gCD = (Date.now() - parseInt(lg ? lg.value : 0)) < 180000; // 3分間隔
+            const gCD = (Date.now() - parseInt(lg ? lg.value : 0)) < 1000; // 3分間隔
 
             if (body.match(/(^|\n)\/(chouhan|cc|derby)\b/) && isGamble) {
                 if (gSt[rid]) return sendTemp(rid, `[info]⚠️ 他のゲームが進行中です。[/info]`);
-                if (gCD) return sendTemp(rid, `[info]⚠️ ゲームは3分間隔です。もう少しお待ちください。[/info]`);
+                if (gCD) return sendTemp(rid, `[info]⚠️ エラーが発生しました。もう一度お試しください。[/info]`);
                 
                 let t = body.includes('/derby') ? 'db' : (body.includes('/cc') ? 'cc' : 'ch');
                 gSt[rid] = { type: t, state: 'RECRUITING', host: sId, players: [{ aid: sId, bet: 0 }], oddsMap: {}, oddsStr: "", st: [] };
