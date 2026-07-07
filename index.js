@@ -452,8 +452,8 @@ app.post('/webhook', (req, res) => {
             // --- 🎰 スロット / 宝くじ ---
             const sM = body.match(/(^|\n)\/slot\s+(max|half|[0-9]+)/);
             if (sM && isGamble && p) {
-                if (p.slot_count >= 3) return sendTemp(rid, `[info]⚠️ ${mkRp(sId, rid, mId)}\n本日のスロットは上限(1日3回)に達しました！[/info]`);
-                if (Date.now() - (p.last_slot_time || 0) < 1000) return sendTemp(rid, `[info]⚠️ ${mkRp(sId, rid, mId)}\nエラーゲロった！[/info]`);
+                if (p.slot_count >= 15) return sendTemp(rid, `[info]⚠️ ${mkRp(sId, rid, mId)}\n本日のスロットは上限(1日15回)に達しました！[/info]`);
+                if (Date.now() - (p.last_slot_time || 0) < 4000000) return sendTemp(rid, `[info]⚠️ ${mkRp(sId, rid, mId)}\nクールタイム…！[/info]`);
                 let bet = sM[2] === 'max' ? myM : (sM[2] === 'half' ? Math.floor(myM/2) : parseInt(sM[2], 10));
                 if (bet > 0 && myM >= bet) {
                     await sb.from('players').update({ money: myM - bet, last_slot_time: Date.now(), slot_count: p.slot_count + 1 }).eq('account_id', sId);
@@ -478,12 +478,12 @@ app.post('/webhook', (req, res) => {
                     const { data: lD } = await sb.from('config').select('value').eq('key', 'lottery_tickets').single();
                     let tks = lD ? JSON.parse(lD.value) : []; let uN = new Set(tks.map(t=>t.num)); let mN = [];
                     if (md === '連番') {
-                        let st = -1, rs = Math.floor(Math.random()*(10000-cnt))+1;
-                        for(let i=0;i<10000;i++){ let s=((rs+i)%(10000-cnt))+1; let ok=true; for(let j=0;j<cnt;j++){ if(uN.has(s+j)){ ok=false; break; } } if(ok){ st=s; break; } }
+                        let st = -1, rs = Math.floor(Math.random()*(100000-cnt))+1;
+                        for(let i=0;i<10000;i++){ let s=((rs+i)%(100000-cnt))+1; let ok=true; for(let j=0;j<cnt;j++){ if(uN.has(s+j)){ ok=false; break; } } if(ok){ st=s; break; } }
                         if(st===-1) return sendTemp(rid, `[info]⚠️ 連続した空き番号がありません。[/info]`);
                         for(let j=0;j<cnt;j++) mN.push(st+j);
                     } else {
-                        let av = []; for(let i=1;i<=9999;i++) if(!uN.has(i)) av.push(i);
+                        let av = []; for(let i=1;i<=99999;i++) if(!uN.has(i)) av.push(i);
                         if(av.length<cnt) return sendTemp(rid, `[info]⚠️ 残りのくじが足りません。[/info]`);
                         for(let i=av.length-1;i>0;i--){ const r=Math.floor(Math.random()*(i+1)); [av[i],av[r]]=[av[r],av[i]]; }
                         mN = av.slice(0, cnt);
