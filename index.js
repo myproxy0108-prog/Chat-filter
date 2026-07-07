@@ -458,7 +458,7 @@ app.post('/webhook', (req, res) => {
                 if (bet > 0 && myM >= bet) {
                     await sb.from('players').update({ money: myM - bet, last_slot_time: Date.now(), slot_count: p.slot_count + 1 }).eq('account_id', sId);
                     const r = Math.random() * 1000; let ml = 0, sym = "", res = "";
-                    if (r < 5) { ml=100; sym="🐉 | 🐉 | 🐉"; res="🔥 超大当たり！！！ (100倍)"; } 
+                    if (r < 3) { ml=100; sym="🐉 | 🐉 | 🐉"; res="🔥 超大当たり！！！ (100倍)"; } 
                     else if (r < 20) { ml=10; sym="7️⃣ | 7️⃣ | 7️⃣"; res="✨ 大当たり！ (10倍)"; } 
                     else if (r < 100) { ml=3; let s=["6️⃣","5️⃣","4️⃣"][Math.floor(Math.random()*3)]; sym=`${s} | ${s} | ${s}`; res="🎉 当たり！ (3倍)"; } 
                     else if (r < 200) { ml=2; let s=["3️⃣","2️⃣","1️⃣"][Math.floor(Math.random()*3)]; sym=`${s} | ${s} | ${s}`; res="🎉 当たり！ (2倍)"; } 
