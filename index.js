@@ -142,7 +142,7 @@ const handleTO = async (rid) => {
     }
 };
 
-const startTimer = (rid, ms = 60000) => {
+const startTimer = (rid, ms = 900000) => {
     if (gSt[rid]?.tid) clearTimeout(gSt[rid].tid);
     if (gSt[rid]) gSt[rid].tid = setTimeout(() => handleTO(rid), ms);
 };
