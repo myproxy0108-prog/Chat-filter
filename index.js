@@ -457,16 +457,16 @@ app.post('/webhook', (req, res) => {
                 let bet = sM[2] === 'max' ? myM : (sM[2] === 'half' ? Math.floor(myM/2) : parseInt(sM[2], 10));
                 if (bet > 0 && myM >= bet) {
                     await sb.from('players').update({ money: myM - bet, last_slot_time: Date.now(), slot_count: p.slot_count + 1 }).eq('account_id', sId);
-                    const r = Math.random() * 100; let ml = 0, sym = "", res = "";
-                    if (r < 1) { ml=100; sym="🐉 | 🐉 | 🐉"; res="🔥 超大当たり！！！ (100倍)"; } 
-                    else if (r < 4) { ml=10; sym="7️⃣ | 7️⃣ | 7️⃣"; res="✨ 大当たり！ (10倍)"; } 
-                    else if (r < 10) { ml=3; let s=["6️⃣","5️⃣","4️⃣"][Math.floor(Math.random()*3)]; sym=`${s} | ${s} | ${s}`; res="🎉 当たり！ (3倍)"; } 
-                    else if (r < 20) { ml=2; let s=["3️⃣","2️⃣","1️⃣"][Math.floor(Math.random()*3)]; sym=`${s} | ${s} | ${s}`; res="🎉 当たり！ (2倍)"; } 
-                    else if (r < 30) { ml=2; let s=["🍉","🍋","🔔","🍇"][Math.floor(Math.random()*4)]; sym=`${s} | ${s} | ${s}`; res="🍇 フルーツ揃い！ (2倍)"; } 
-                    else if (r < 50) { ml=2; let o=["🍉","🍋","🔔","🍇","7️⃣","6️⃣","5️⃣"]; let s1=o[Math.floor(Math.random()*o.length)], s2=o[Math.floor(Math.random()*o.length)]; let a=["🍒",s1,s2].sort(()=>Math.random()-0.5); sym=a.join(" | "); res="🍒 チェリー出現！ (2倍)"; } 
+                    const r = Math.random() * 1000; let ml = 0, sym = "", res = "";
+                    if (r < 5) { ml=100; sym="🐉 | 🐉 | 🐉"; res="🔥 超大当たり！！！ (100倍)"; } 
+                    else if (r < 20) { ml=10; sym="7️⃣ | 7️⃣ | 7️⃣"; res="✨ 大当たり！ (10倍)"; } 
+                    else if (r < 100) { ml=3; let s=["6️⃣","5️⃣","4️⃣"][Math.floor(Math.random()*3)]; sym=`${s} | ${s} | ${s}`; res="🎉 当たり！ (3倍)"; } 
+                    else if (r < 200) { ml=2; let s=["3️⃣","2️⃣","1️⃣"][Math.floor(Math.random()*3)]; sym=`${s} | ${s} | ${s}`; res="🎉 当たり！ (2倍)"; } 
+                    else if (r < 300) { ml=2; let s=["🍉","🍋","🔔","🍇"][Math.floor(Math.random()*4)]; sym=`${s} | ${s} | ${s}`; res="🍇 フルーツ揃い！ (2倍)"; } 
+                    else if (r < 400) { ml=1; let o=["🍉","🍋","🔔","🍇","7️⃣","6️⃣","5️⃣"]; let s1=o[Math.floor(Math.random()*o.length)], s2=o[Math.floor(Math.random()*o.length)]; let a=["🍒",s1,s2].sort(()=>Math.random()-0.5); sym=a.join(" | "); res="🍒 チェリー出現！ (1倍)"; } 
                     else { ml=0; let o=["🍉","🍋","🔔","🍇","7️⃣","6️⃣","5️⃣"]; let r1=o[Math.floor(Math.random()*o.length)], r2=o[Math.floor(Math.random()*o.length)], r3=o[Math.floor(Math.random()*o.length)]; while(r1===r2&&r2===r3) r3=o[Math.floor(Math.random()*o.length)]; sym=`${r1} | ${r2} | ${r3}`; res="💀 はずれ..."; }
                     let wA = bet * ml; if (wA > 0) await addMoney(sId, wA);
-                    return sendMsg(rid, `[info][title]🎰 SLOT MACHINE[/title]${mkRp(sId, rid, mId)}\n[hr]　▶ [ ${sym} ] ◀　\n[hr]${res}\n\n賭け金: ${fNum(bet)} ➡ 獲得: ${fNum(wA)} コイン\n(残り回数: ${3 - (p.slot_count+1)}回)[/info]`);
+                    return sendMsg(rid, `[info][title]🎰 SLOT MACHINE[/title]${mkRp(sId, rid, mId)}\n[hr]　▶ [ ${sym} ] ◀　\n[hr]${res}\n\n賭け金: ${fNum(bet)} ➡ 獲得: ${fNum(wA)} コイン\n(残り回数: ${15 - (p.slot_count+1)}回)[/info]`);
                 } else return sendTemp(rid, `[info]⚠️ お金が足りません！[/info]`);
             }
 
