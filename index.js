@@ -243,21 +243,21 @@ app.post('/webhook', (req, res) => {
             if (localLastReset !== today) {
                 const { data: ld } = await sb.from('config').select('value').eq('key', 'last_reset_date').single();
                 if (!ld || ld.value !== today) {
-                    await sb.from('players').update({ slot_count: 0, work_limit: 5, work_date: null, skill_date: null }).neq('account_id', '0');
+                    await sb.from('players').update({ slot_count: 0, work_limit: 10, work_date: null, skill_date: null }).neq('account_id', '0');
                     await sb.from('config').upsert({ key: 'last_reset_date', value: today });
                     localLastReset = today;
                     let m = `[info][title]🔄 日付更新のお知らせ[/title]深夜0時を回りました。\nスロット回数と仕事制限がリセットされました！\n[hr]`;
                     const { data: tData } = await sb.from('config').select('value').eq('key', 'lottery_tickets').single();
                     let tks = tData ? JSON.parse(tData.value) : [];
                     if (tks.length > 0) {
-                        let win = Math.floor(Math.random() * 9999) + 1;
+                        let win = Math.floor(Math.random() * 99999) + 1;
                         m += `[title]🎯 宝くじ 抽選結果発表[/title]本日の当選番号は...【 ${win} 】です！\n[hr]`;
                         let pays = {}; let wns = [];
                         const chP = (n, w) => {
-                            if(n===w) return {p:30000, n:'🥇1等'};
-                            let pr=w-1<1?9999:w-1, nx=w+1>9999?1:w+1;
-                            if(n===pr||n===nx) return {p:15000, n:'🥈前後賞'};
-                            if(n%1000===w%1000) return {p:10000, n:'🥈2等'}; 
+                            if(n===w) return {p:50000, n:'🥇1等'};
+                            let pr=w-1<1?99999:w-1, nx=w+1>99999?1:w+1;
+                            if(n===pr||n===nx) return {p:30000, n:'🥈前後賞'};
+                            if(n%1000===w%1000) return {p:20000, n:'🥈2等'}; 
                             if(n%100===w%100) return {p:5000, n:'🥉3等'};    
                             if(n%10===w%10) return {p:1000, n:'🏅4等'}; return null;
                         };
