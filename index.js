@@ -427,7 +427,7 @@ app.post('/webhook', (req, res) => {
 
             if (body === '/work' && isGamble && p) {
                 if (p.work_limit <= 0) return sendTemp(rid, `[info]⚠️ ${mkRp(sId, rid, mId)}\n本日の仕事回数が上限(5回)に達しました。[/info]`);
-                if (Date.now() - (p.last_work_time || 0) < 600000) return sendTemp(rid, `[info]⚠️ ${mkRp(sId, rid, mId)}\n休憩中です！仕事は10分間隔で行えます。[/info]`);
+                if (Date.now() - (p.last_work_time || 0) < 1000) return sendTemp(rid, `[info]⚠️ ${mkRp(sId, rid, mId)}\n休憩中です！仕事は10分間隔で行えます。[/info]`);
                 let earn = 0; let msg = "";
                 if (myJ === 'サラリーマン') { if (Math.random() < 0.1) { earn=0; msg="仕事で大きなミスをしてしまい、本日の給料は 0 コインになりました...😭"; } else { earn=Math.floor(Math.random()*401)+100; msg=`真面目に働き、 ${fNum(earn)} コイン稼ぎました！💼`; } }
                 else if (myJ === '公務員') { earn=Math.floor(Math.random()*201)+300; msg=`安定した仕事をこなし、 ${fNum(earn)} コイン稼ぎました！🏛️`; }
@@ -453,7 +453,7 @@ app.post('/webhook', (req, res) => {
             const sM = body.match(/(^|\n)\/slot\s+(max|half|[0-9]+)/);
             if (sM && isGamble && p) {
                 if (p.slot_count >= 3) return sendTemp(rid, `[info]⚠️ ${mkRp(sId, rid, mId)}\n本日のスロットは上限(1日3回)に達しました！[/info]`);
-                if (Date.now() - (p.last_slot_time || 0) < 60000) return sendTemp(rid, `[info]⚠️ ${mkRp(sId, rid, mId)}\nスロット休憩中(10分間隔)です！[/info]`);
+                if (Date.now() - (p.last_slot_time || 0) < 1000) return sendTemp(rid, `[info]⚠️ ${mkRp(sId, rid, mId)}\nエラーゲロった！[/info]`);
                 let bet = sM[2] === 'max' ? myM : (sM[2] === 'half' ? Math.floor(myM/2) : parseInt(sM[2], 10));
                 if (bet > 0 && myM >= bet) {
                     await sb.from('players').update({ money: myM - bet, last_slot_time: Date.now(), slot_count: p.slot_count + 1 }).eq('account_id', sId);
