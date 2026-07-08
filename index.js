@@ -6,7 +6,7 @@ const { createClient } = require('@supabase/supabase-js');
 const app = express();
 app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
 
-// --- API Client Init ---
+// --- API Client Ini ---
 const cw = axios.create({
     baseURL: 'https://api.chatwork.com/v2',
     headers: { 'X-ChatWorkToken': process.env.CHATWORK_API_TOKEN, 'Content-Type': 'application/x-www-form-urlencoded' }
