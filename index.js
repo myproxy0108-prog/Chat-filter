@@ -609,8 +609,8 @@ app.post('/webhook', (req, res) => {
             // --- 🎰 スロット ---
             const sM = body.match(/(^|\n)\/slot\s+(max|half|[0-9]+)/);
             if (sM && gambleActive) {
-                if (pData.slot_count >= 3) return sendTempMessage(roomId, `[info]⚠️ ${makeRp(senderId, roomId, msgId)}\n本日のスロットは上限(1日3回)に達しました！[/info]`);
-                if (Date.now() - Number(pData.last_slot_time || 0) < 600000) return sendTempMessage(roomId, `[info]⚠️ ${makeRp(senderId, roomId, msgId)}\nスロット休憩中(10分間隔)です！[/info]`);
+                if (pData.slot_count >= 5) return sendTempMessage(roomId, `[info]⚠️ ${makeRp(senderId, roomId, msgId)}\n本日のスロットは上限(1日5回)に達しました！[/info]`);
+                if (Date.now() - Number(pData.last_slot_time || 0) < 60000) return sendTempMessage(roomId, `[info]⚠️ ${makeRp(senderId, roomId, msgId)}\nスロット休憩中(1分間隔)です！[/info]`);
                 
                 let bet = sM[2] === 'max' ? myMoney : (sM[2] === 'half' ? Math.floor(myMoney / 2) : parseInt(sM[2], 10));
                 
@@ -677,11 +677,11 @@ app.post('/webhook', (req, res) => {
 
             // --- 🎲 テーブルゲーム (募集・参加・退出・進行) ---
             const { data: lg } = await supabase.from('config').select('value').eq('key', 'last_game_time').single();
-            const gCD = (Date.now() - parseInt(lg ? lg.value : 0)) < 180000; // 3分
+            const gCD = (Date.now() - parseInt(lg ? lg.value : 0)) < 1000; // 3分
 
             if (body.match(/(^|\n)\/(chouhan|cc|derby)\b/) && gambleActive) {
                 if (gameState[roomId]) return sendTempMessage(roomId, `[info][title]⚠️ エラー[/title]現在、別のゲームが進行中です。終了までお待ちください。[/info]`);
-                if (gCD) return sendTempMessage(roomId, `[info][title]⚠️ 待機中[/title]ゲームは3分間隔です。もう少しお待ちください。[/info]`);
+                if (gCD) return sendTempMessage(roomId, `[info][title]⚠️ 待機中[/title]えらーげろった[/info]`);
                 
                 let t = body.includes('/derby') ? 'derby' : (body.includes('/cc') ? 'cc' : 'chouhan');
                 gameState[roomId] = { type: t, state: 'RECRUITING', host: senderId, players: [{ aid: senderId, bet: 0 }] };
