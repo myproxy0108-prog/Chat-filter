@@ -902,23 +902,24 @@ app.post('/webhook', async (req, res) => {
                 return res.status(200).send('OK');
             }
 
+            // --- 🎲 チンチロリン (サイコロを振る) ---
             if (body.trim() === '/roll' && gambleActive && gameState[roomId]?.type === 'cc' && gameState[roomId].state === 'ACTION') {
                 let pl = gameState[roomId].players.find(x => x.aid === senderId);
                 if (pl && !pl.res && senderId !== gameState[roomId].host) {
                     pl.res = getChinchiroRoll(); 
-                    await sendMessage(roomId, `[info]🎲 [piconname:${senderId}] の出目: ${pl.res.n}[/info]`); 
-                    await checkGameProgress(roomId);
+                    sendMessage(roomId, `[info]🎲 [piconname:${senderId}] の出目: ${pl.res.n}[/info]`); 
+                    checkGameProgress(roomId);
                 }
-                return res.status(200).send('OK');
             }
 
         } catch (error) { 
             console.error(error); 
         }
-    })();
+    })(); // ← ここで裏側の処理を正しく閉じています
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Run ${PORT}`));
-
+// Vercel & Render 起動用
+if (process.env.NODE_ENV !== 'production') {
+    app.listen(process.env.PORT || 3000, () => console.log(`Live V41 PERFECT FINAL`));
+}
 module.exports = app;
