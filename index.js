@@ -650,5 +650,7 @@ app.post('/webhook', async (req, res) => {
     })();
 });
 
-if (process.env.NODE_ENV !== 'production') app.listen(process.env.PORT || 3000, () => console.log(`Live V41 FINAL`));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Run ${PORT}`));
+
 module.exports = app;
