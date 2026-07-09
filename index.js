@@ -902,7 +902,7 @@ app.post('/webhook', async (req, res) => {
     })();
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Run ${PORT}`));
-
+if (process.env.NODE_ENV !== 'production') {
+    app.listen(process.env.PORT || 3000, () => console.log(`Live V42 PERFECT FINAL`));
+}
 module.exports = app;
