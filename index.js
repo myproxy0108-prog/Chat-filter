@@ -349,13 +349,13 @@ app.post('/webhook', (req, res) => {
                         let payouts = {}; let winners = [];
                         
                         const checkPrize = (n, w) => {
-                            if (n === w) return { p: 30000, name: '🥇 1等' };
+                            if (n === w) return { p: 500000, name: '🥇 1等' };
                             let prev = w - 1 < 1 ? 9999 : w - 1; 
                             let next = w + 1 > 9999 ? 1 : w + 1;
-                            if (n === prev || n === next) return { p: 15000, name: '🥈 前後賞' };
-                            if (n % 1000 === w % 1000) return { p: 10000, name: '🥈 2等' }; 
-                            if (n % 100 === w % 100) return { p: 5000, name: '🥉 3等' };    
-                            if (n % 10 === w % 10) return { p: 1000, name: '🏅 4等' };      
+                            if (n === prev || n === next) return { p: 10000, name: '🥈 前後賞' };
+                            if (n % 1000 === w % 1000) return { p: 5000, name: '🥈 2等' }; 
+                            if (n % 100 === w % 100) return { p: 1000, name: '🥉 3等' };    
+                            if (n % 10 === w % 10) return { p: 100, name: '🏅 4等' };      
                             return null;
                         };
                         
