@@ -17,19 +17,16 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY
 let gambleActive = false;
 let localLastResetDate = null;
 const spamRecords = {};
-const gameState = {}; // ゲーム状態を一元管理する変数
+const gameState = {}; // 全ゲームの進行状況管理
 
-// 起動時にギャンブル状態を取得
 supabase.from('config').select('value').eq('key', 'gamble_active').single().then(r => {
     if (r.data) gambleActive = r.data.value === 'true';
 }).catch(()=>{});
 
-// --- Date Utils ---
 const getTodayStr = () => new Date(Date.now() + 32400000).toISOString().split('T')[0];
 const getThisMonthStr = () => new Date(Date.now() + 32400000).toISOString().slice(0, 7);
 const fNum = (n) => Number(n).toLocaleString();
 
-// --- 署名検証 ---
 const verifySignature = (req) => {
     const sig = req.headers['x-chatworkwebhooksignature'];
     if (!sig || !req.rawBody) return false;
@@ -47,34 +44,25 @@ const sendMessage = async (rid, txt) => {
 const sendTempMessage = async (rid, txt, ms = 60000) => {
     try {
         const res = await cw.post(`/rooms/${rid}/messages`, `body=${encodeURIComponent(txt)}`);
-        if (res?.data?.message_id) {
-            setTimeout(() => cw.delete(`/rooms/${rid}/messages/${res.data.message_id}`).catch(()=>{}), ms);
-        }
+        if (res?.data?.message_id) setTimeout(() => cw.delete(`/rooms/${rid}/messages/${res.data.message_id}`).catch(()=>{}), ms);
     } catch(e) {}
 };
 
-// --- お金・借金管理 (自動返済) ---
+// --- お金・借金管理 ---
 const addMoney = async (aid, amount) => {
     const { data: p } = await supabase.from('players').select('*').eq('account_id', aid).single();
     let money = p ? p.money : 0;
     let debt = p ? (p.debt || 0) : 0;
-
-    // 稼いだ額から優先して借金を返済する
     if (debt > 0 && amount > 0) {
         let repay = Math.min(debt, amount);
-        debt -= repay;
-        amount -= repay;
+        debt -= repay; amount -= repay;
     }
     money += amount;
-
-    if (p) {
-        await supabase.from('players').update({ money, debt }).eq('account_id', aid);
-    } else {
-        await supabase.from('players').insert({ account_id: aid, money, debt, slot_count: 0, work_limit: 5, msg_count: 0 });
-    }
+    if (p) await supabase.from('players').update({ money, debt }).eq('account_id', aid);
+    else await supabase.from('players').insert({ account_id: aid, money, debt, slot_count: 0, work_limit: 5, msg_count: 0, job: 'サラリーマン' });
 };
 
-// --- 管理・防衛機能 ---
+// --- 防衛機能 ---
 const isUserAdmin = async (rid, aid) => {
     try {
         const { data } = await cw.get(`/rooms/${rid}/members`);
@@ -90,22 +78,18 @@ const kickTarget = async (rid, targetAids, action = 'readonly') => {
         let members = membersList.filter(m => m.role === 'member').map(m => m.account_id.toString());
         let readonlys = membersList.filter(m => m.role === 'readonly').map(m => m.account_id.toString());
         let found = false;
-
         for (const aid of targetAids) {
             let id = aid.toString();
             if (admins.includes(id) || members.includes(id) || readonlys.includes(id)) found = true;
-            admins = admins.filter(x => x !== id);
-            members = members.filter(x => x !== id);
-            readonlys = readonlys.filter(x => x !== id);
+            admins = admins.filter(x => x !== id); members = members.filter(x => x !== id); readonlys = readonlys.filter(x => x !== id);
             if (action === 'readonly') readonlys.push(id);
         }
         if (!found) return;
-
-        const params = new URLSearchParams();
-        if (admins.length > 0) params.append('members_admin_ids', admins.join(','));
-        if (members.length > 0) params.append('members_member_ids', members.join(','));
-        if (readonlys.length > 0) params.append('members_readonly_ids', readonlys.join(','));
-        await cw.put(`/rooms/${rid}/members`, params.toString());
+        const p = new URLSearchParams();
+        if (admins.length > 0) p.append('members_admin_ids', admins.join(','));
+        if (members.length > 0) p.append('members_member_ids', members.join(','));
+        if (readonlys.length > 0) p.append('members_readonly_ids', readonlys.join(','));
+        await cw.put(`/rooms/${rid}/members`, p.toString());
     } catch(e) {}
 };
 
@@ -120,26 +104,10 @@ const checkSpam = (aid) => {
 // --- ゲームエンジン ---
 const generateDerby = () => {
     let stats = []; for(let i=0; i<6; i++) stats.push(Math.random() * 10 + 1);
-    let combos = [], totalWeight = 0;
-    let oddsMap = {}, oddsStr = "";
-    
-    for(let i=1; i<=5; i++){
-        for(let j=i+1; j<=6; j++){
-            let w = stats[i-1] * stats[j-1];
-            combos.push({ c: `${i}-${j}`, w });
-            totalWeight += w;
-        }
-    }
-    
-    combos.forEach(c => {
-        let odd = (0.8 / (c.w / totalWeight)).toFixed(1);
-        if (odd < 1.1) odd = 1.1; if (odd > 150) odd = 150.0;
-        oddsMap[c.c] = Number(odd);
-    });
-    
-    Object.keys(oddsMap).sort((a,b) => oddsMap[a] - oddsMap[b]).forEach(k => {
-        oddsStr += `🐎 ${k} : [code]${oddsMap[k]}倍[/code]\n`;
-    });
+    let combos = [], totalWeight = 0, oddsMap = {}, oddsStr = "";
+    for(let i=1; i<=5; i++){ for(let j=i+1; j<=6; j++){ let w = stats[i-1] * stats[j-1]; combos.push({ c: `${i}-${j}`, w }); totalWeight += w; } }
+    combos.forEach(c => { let o = (0.8 / (c.w / totalWeight)).toFixed(1); if (o < 1.1) o = 1.1; if (o > 150) o = 150.0; oddsMap[c.c] = Number(o); });
+    Object.keys(oddsMap).sort((a,b) => oddsMap[a] - oddsMap[b]).forEach(k => { oddsStr += `🐎 ${k} : [code]${oddsMap[k]}倍[/code]\n`; });
     return { oddsMap, oddsStr, stats };
 };
 
@@ -157,18 +125,40 @@ const getChinchiroRoll = () => {
     return { d: [0,0,0], n: "目なし", r: 1, s: 0, m: 1 };
 };
 
+const createDeck = () => {
+    const suits = ['♠', '♥', '♣', '♦'];
+    const ranks = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+    let deck = [];
+    for (let s of suits) {
+        for (let r of ranks) {
+            let val = (r === 'A') ? 1 : (['J', 'Q', 'K'].includes(r) ? 10 : parseInt(r));
+            deck.push({ suit: s, rank: r, val: val });
+        }
+    }
+    for(let i = deck.length - 1; i > 0; i--){
+        const r = Math.floor(Math.random() * (i + 1));
+        [deck[i], deck[r]] = [deck[r], deck[i]];
+    }
+    return deck;
+};
+
+const calcScore = (hand) => {
+    let score = 0, aces = 0;
+    for (let c of hand) {
+        if (c.rank === 'A') { aces++; score += 11; } else score += c.val;
+    }
+    while (score > 21 && aces > 0) { score -= 10; aces--; }
+    return score;
+};
+
 // --- ゲーム進行・タイマー ---
 const startGameTimer = (rid, ms = 60000, isDerby = false) => {
     let game = gameState[rid]; if (!game) return;
-    
     if (game.timeoutId) clearTimeout(game.timeoutId);
     if (game.remindId) clearTimeout(game.remindId);
-    
     if (isDerby) {
         game.remindId = setTimeout(() => {
-            if (gameState[rid] && gameState[rid].state === 'BETTING') {
-                sendTempMessage(rid, `[info]⏳ 競馬のベット締め切りまで【残り1分】です！\nまだの方は [code]/bet [額] [馬1-馬2][/code] を入力してください。[/info]`);
-            }
+            if (gameState[rid] && gameState[rid].state === 'BETTING') sendTempMessage(rid, `[info]⏳ 競馬のベット締め切りまで【残り1分】です！\n[code]/bet [額] [馬1-馬2][/code] を入力してください。[/info]`);
         }, ms - 60000);
     }
     game.timeoutId = setTimeout(() => handleGameTimeout(rid), ms);
@@ -178,10 +168,11 @@ const handleGameTimeout = async (rid) => {
     let game = gameState[rid]; if (!game || game.state === 'IDLE') return;
 
     if (game.state === 'RECRUITING') {
-        if (game.players.length >= 2) {
+        // BJは1人でも可能
+        if (game.players.length >= 2 || (game.type === 'bj' && game.players.length >= 1)) {
             game.state = 'BETTING';
             if (game.type === 'derby') {
-                let ex = `\n【 🐎 馬連オッズ 】\n${game.oddsStr}\n[hr]👉 [code]/bet [額] [馬1-馬2][/code] (例: /bet 100 1-2)`;
+                let ex = `\n【 🐎 馬連オッズ 】\n${game.oddsStr}\n[hr]👉 [code]/bet [額] [馬1]-[馬2][/code] (例: /bet 100 1-2)`;
                 await sendTempMessage(rid, `[info][title]⏳ 募集終了・ゲーム開始[/title]参加者が確定しました。${ex}\n[hr](※制限2分。残り1分でリマインドします)[/info]`, 120000);
                 startGameTimer(rid, 120000, true);
             } else {
@@ -193,33 +184,50 @@ const handleGameTimeout = async (rid) => {
             await sendTempMessage(rid, `[info][title]⚠️ ゲーム中止[/title]参加者が2人未満のため、ゲームを中止します。[/info]`);
             gameState[rid] = null;
         }
-    } else {
-        // ベットや選択がない人を退出させる
+    } else if (game.state === 'BETTING') {
         let kicked = [], activePlayers = [];
         for (let p of game.players) {
-            let isKicked = false;
-            if (game.state === 'BETTING' && p.bet === 0) isKicked = true;
-            if (game.state === 'ACTION' && (game.type === 'chouhan' && !p.choice || game.type === 'cc' && !p.res)) isKicked = true;
-            
-            if (isKicked) { 
-                kicked.push(p.aid); 
-                if (p.bet > 0) await addMoney(p.aid, p.bet); 
-            } else {
-                activePlayers.push(p);
-            }
+            if (p.bet === 0) { kicked.push(p.aid); } else { activePlayers.push(p); }
         }
         game.players = activePlayers;
+        if (kicked.length > 0) await sendTempMessage(rid, `[info][title]⏳ タイムアウト[/title]ベット時間切れのため退出させました。\n${kicked.map(a => `[piconname:${a}]`).join(' ')}[/info]`);
         
-        if (kicked.length > 0) {
-            await sendTempMessage(rid, `[info][title]⏳ タイムアウト[/title]時間切れのため、以下のプレイヤーを退出・返金しました。\n${kicked.map(a => `[piconname:${a}]`).join(' ')}[/info]`);
-        }
-        
-        if (game.players.length < 2) {
+        if (game.players.length < 2 && game.type !== 'bj') {
             for (let p of game.players) if (p.bet > 0) await addMoney(p.aid, p.bet);
             await sendTempMessage(rid, `[info][title]⚠️ ゲーム中止[/title]参加者が2人未満になったため中止し、全額返金しました。[/info]`);
             gameState[rid] = null;
+        } else if (game.players.length === 0 && game.type === 'bj') {
+            await sendTempMessage(rid, `[info][title]⚠️ ゲーム中止[/title]全員退出したため中止しました。[/info]`);
+            gameState[rid] = null;
         } else {
             await checkGameProgress(rid);
+        }
+    } else if (game.state === 'ACTION') {
+        if (game.type === 'bj') {
+            let p = game.players[game.turnIndex];
+            if (p && p.status === 'playing') {
+                p.status = 'stand';
+                await sendTempMessage(rid, `[info]⏳ タイムアウトにより、[piconname:${p.aid}] 様は自動スタンドしました。[/info]`);
+                game.turnIndex++; await nextBJTurn(rid);
+            }
+        } else {
+            let kicked = [], activePlayers = [];
+            for (let p of game.players) {
+                if ((game.type === 'chouhan' && !p.choice) || (game.type === 'cc' && !p.res && p.aid !== game.host)) {
+                    kicked.push(p.aid); if (p.bet > 0) await addMoney(p.aid, p.bet);
+                } else activePlayers.push(p);
+            }
+            game.players = activePlayers;
+            if (kicked.length > 0) await sendTempMessage(rid, `[info][title]⏳ タイムアウト[/title]時間切れのため退出・返金しました。\n${kicked.map(a => `[piconname:${a}]`).join(' ')}[/info]`);
+            
+            if (game.players.length < 2) {
+                for (let p of game.players) if (p.bet > 0) await addMoney(p.aid, p.bet);
+                await sendTempMessage(rid, `[info][title]⚠️ ゲーム中止[/title]参加者が2人未満になったため中止・返金しました。[/info]`);
+                gameState[rid] = null;
+            } else {
+                if (game.type === 'chouhan') await resolveChouhan(rid);
+                else if (game.type === 'cc') await resolveChinchiro(rid);
+            }
         }
     }
 };
@@ -227,90 +235,132 @@ const handleGameTimeout = async (rid) => {
 const checkGameProgress = async (rid) => {
     let game = gameState[rid]; if (!game || game.state === 'IDLE') return;
     
-    if (game.state === 'BETTING' && game.players.length >= 2 && game.players.every(p => p.bet > 0)) {
+    if (game.state === 'BETTING' && game.players.every(p => p.bet > 0)) {
         if (game.type === 'derby') {
             clearTimeout(game.timeoutId); if (game.remindId) clearTimeout(game.remindId);
             await resolveDerby(rid);
+        } else if (game.type === 'bj') {
+            game.state = 'ACTION';
+            game.deck = createDeck();
+            game.dealerHand = [game.deck.pop(), game.deck.pop()];
+            let msg = `[info][title]🃏 ブラックジャック 開始[/title]全員ベット完了！カードを配ります。\n\n【 ディーラー 】\n🎴 ${game.dealerHand[0].suit}${game.dealerHand[0].rank} / [裏]\n[hr]`;
+            for (let p of game.players) {
+                p.hand = [game.deck.pop(), game.deck.pop()];
+                let pScore = calcScore(p.hand);
+                let hStr = p.hand.map(c => c.suit + c.rank).join(' ');
+                msg += `[piconname:${p.aid}]: ${hStr} (スコア: ${pScore})`;
+                if (pScore === 21) { p.status = 'bj'; msg += ` 🎉 BJ！\n`; } 
+                else { p.status = 'playing'; msg += `\n`; }
+            }
+            msg += `[/info]`;
+            await sendTempMessage(rid, msg, 120000);
+            game.turnIndex = 0;
+            await nextBJTurn(rid);
         } else {
             game.state = 'ACTION';
-            let txt = game.type === 'chouhan' ? "丁半を予想し、 [code]/chou[/code] (丁) または [code]/han[/code] (半) と発言してください。" : "全員 [code]/roll[/code] でサイコロを振ってください。";
+            let txt = game.type === 'chouhan' ? "丁半を予想し、 [code]/chou[/code] (丁) または [code]/han[/code] (半) と発言してください。" : "親以外は [code]/roll[/code] でサイコロを振ってください。";
             await sendTempMessage(rid, `[info][title]🎲 ゲーム進行[/title]全員のベットが完了しました！\n${txt}\n[hr](※制限時間: 1分)[/info]`);
             startGameTimer(rid, 60000);
         }
     } else if (game.state === 'ACTION') {
-        if (game.type === 'chouhan' && game.players.length >= 2 && game.players.every(p => p.choice)) await resolveChouhan(rid);
-        if (game.type === 'cc' && game.players.length >= 2 && game.players.every(p => p.res)) await resolveChinchiro(rid);
+        if (game.type === 'chouhan' && game.players.every(p => p.choice)) await resolveChouhan(rid);
+        if (game.type === 'cc' && game.players.filter(x => x.aid !== game.host).every(p => p.res)) await resolveChinchiro(rid);
     }
+};
+
+const nextBJTurn = async (rid) => {
+    let g = gameState[rid]; if (!g || g.type !== 'bj') return;
+    while (g.turnIndex < g.players.length) {
+        let p = g.players[g.turnIndex];
+        if (p.status !== 'playing') { g.turnIndex++; continue; }
+        
+        let score = calcScore(p.hand);
+        let hStr = p.hand.map(c => c.suit+c.rank).join(' ');
+        await sendTempMessage(rid, `[info][title]🃏 ターン進行[/title][piconname:${p.aid}] さんの番です！\n手札: ${hStr} (スコア: ${score})\n\n👉 [code]/hit[/code] (引く) または [code]/stand[/code] (引かない) を入力してください。\n(制限1分)[/info]`);
+        startGameTimer(rid, 60000); 
+        return;
+    }
+    await resolveBJ(rid);
 };
 
 // --- ゲーム結果精算 ---
-const resolveChinchiro = async (rid) => {
-    let game = gameState[rid]; if (!game) return; clearTimeout(game.timeoutId);
-    let pR = getChinchiroRoll(); 
-    let msg = `[info][title]🎲 チンチロリン 結果発表[/title]【 親 (Bot) の出目 】\n[ ${pR.d.join(', ')} ] ➡ 『 ${pR.n} 』\n[hr]【 プレイヤー結果 】\n`;
+const resolveBJ = async (rid) => {
+    let g = gameState[rid]; if (!g) return; clearTimeout(g.timeoutId);
+    let dHand = g.dealerHand;
+    let dScore = calcScore(dHand);
+    let msg = `[info][title]🃏 ブラックジャック 結果発表[/title]【 ディーラーのターン 】\n伏せカードは ${dHand[1].suit}${dHand[1].rank} でした。\n`;
     
-    for (let p of game.players) {
-        let r = p.res || { r: 1, n: "欠席", m: 1, s: 0, d: [0,0,0] };
-        let win = (r.r > pR.r) || (r.r === pR.r && r.s > pR.s);
-        let draw = (r.r === pR.r && r.s === pR.s);
-        
-        if (draw) { 
-            await addMoney(p.aid, p.bet); 
-            msg += `😐 [piconname:${p.aid}]: [${r.d.join('')}] ${r.n} ➡ 引き分け (返金)\n`; 
-        } else if (win) { 
-            let mult = r.m > 0 ? r.m : 1; await addMoney(p.aid, p.bet + (p.bet * mult)); 
-            msg += `(cracker) [piconname:${p.aid}]: [${r.d.join('')}] ${r.n} ➡ 勝ち！ (+${fNum(p.bet * mult)})\n`; 
-        } else { 
-            msg += `💀 [piconname:${p.aid}]: [${r.d.join('')}] ${r.n} ➡ 負け...\n`; 
-        }
+    while(dScore < 17) {
+        let c = g.deck.pop(); dHand.push(c); dScore = calcScore(dHand);
+        msg += `➡ 引いたカード: ${c.suit}${c.rank}\n`;
     }
-    await sendMessage(rid, msg + "[/info]"); 
-    gameState[rid] = null; 
+    let dStr = dHand.map(c => c.suit+c.rank).join(' ');
+    msg += `最終手札: ${dStr} (スコア: ${dScore})\n`;
+    if (dScore > 21) msg += `💥 ディーラーバースト！\n`;
+    msg += `[hr]【 プレイヤー結果 】\n`;
+    
+    for (let p of g.players) {
+        let pScore = calcScore(p.hand);
+        let winAmt = 0; let resTxt = "";
+        
+        if (p.status === 'bust') { resTxt = `💀 負け (バースト)`; } 
+        else if (p.status === 'bj') {
+            if (dScore === 21 && dHand.length === 2) { resTxt = `😐 引き分け (BJ同士)`; await addMoney(p.aid, p.bet); } 
+            else { winAmt = Math.floor(p.bet * 2.5); resTxt = `(cracker) 勝利！ (BJ: 配当2.5倍) (+${fNum(winAmt)})`; await addMoney(p.aid, p.bet + winAmt); }
+        } else {
+            if (dScore > 21 || pScore > dScore) { winAmt = p.bet * 2; resTxt = `🎉 勝利！ (+${fNum(winAmt)})`; await addMoney(p.aid, p.bet + winAmt); } 
+            else if (pScore === dScore) { resTxt = `😐 引き分け (返金)`; await addMoney(p.aid, p.bet); } 
+            else { resTxt = `💀 負け`; }
+        }
+        msg += `[piconname:${p.aid}]: スコア ${pScore} ➡ ${resTxt}\n`;
+    }
+    await sendMessage(rid, msg + "[/info]");
+    gameState[rid] = null;
+    await supabase.from('config').upsert({ key: 'last_game_time', value: Date.now().toString() });
+};
+
+const resolveChinchiro = async (rid) => {
+    let g = gameState[rid]; if (!g) return; clearTimeout(g.timeoutId);
+    let parentRoll = getChinchiroRoll(); 
+    let msg = `[info][title]🎲 チンチロリン 結果発表[/title]【 親 ([piconname:${g.host}]) の出目 】\n[ ${parentRoll.d.join(', ')} ] ➡ 『 ${parentRoll.n} 』\n[hr]【 プレイヤー結果 】\n`;
+    for (let p of g.players) {
+        if (p.aid === g.host) continue;
+        let r = p.res || { r: 1, n: "欠席", m: 1, s: 0, d: [0,0,0] };
+        let win = (r.r > parentRoll.r) || (r.r === parentRoll.r && r.s > parentRoll.s), draw = (r.r === parentRoll.r && r.s === parentRoll.s);
+        if (draw) { await addMoney(p.aid, p.bet); msg += `😐 [piconname:${p.aid}]: [${r.d.join('')}] ${r.n} ➡ 引き分け (返金)\n`; }
+        else if (win) { let m = r.m > 0 ? r.m : 1; await addMoney(p.aid, p.bet + (p.bet * m)); msg += `(cracker) [piconname:${p.aid}]: [${r.d.join('')}] ${r.n} ➡ 勝ち！ (+${fNum(p.bet * m)})\n`; }
+        else { msg += `💀 [piconname:${p.aid}]: [${r.d.join('')}] ${r.n} ➡ 負け...\n`; }
+    }
+    await sendMessage(rid, msg + "[/info]"); gameState[rid] = null; await supabase.from('config').upsert({ key: 'last_game_time', value: Date.now().toString() });
 };
 
 const resolveChouhan = async (rid) => {
-    let game = gameState[rid]; if (!game) return; clearTimeout(game.timeoutId);
+    let g = gameState[rid]; if (!g) return; clearTimeout(g.timeoutId);
     let d1 = Math.floor(Math.random() * 6) + 1, d2 = Math.floor(Math.random() * 6) + 1, sum = d1 + d2, result = (sum % 2 === 0) ? 'chou' : 'han';
-    
-    let msg = `[info][title]🎲 丁半 結果発表[/title]出目: ${d1} と ${d2} (合計:${sum})\n➡ 『 ${result === 'chou' ? '丁(偶数)' : '半(奇数)'} 』の勝ち！\n[hr]【 プレイヤー結果 】\n`;
-    
-    for (let p of game.players) {
-        if (p.choice === result) { 
-            await addMoney(p.aid, p.bet * 2); 
-            msg += `(cracker) [piconname:${p.aid}]: 的中！ (+${fNum(p.bet * 2)} コイン)\n`; 
-        } else { 
-            msg += `💀 [piconname:${p.aid}]: 予想[${p.choice === 'chou' ? '丁' : '半'}] ➡ はずれ...\n`; 
-        }
+    let msg = `[info][title]🎲 丁半 結果発表[/title]出目: ${d1} と ${d2} (合計:${sum})\n➡ 『 ${result === 'chou' ? '丁(偶数)' : '半(奇数)'} 』\n[hr]【 プレイヤー結果 】\n`;
+    for (let p of g.players) {
+        if (p.choice === result) { await addMoney(p.aid, p.bet * 2); msg += `(cracker) [piconname:${p.aid}]: 的中！ (+${fNum(p.bet * 2)} コイン)\n`; } 
+        else { msg += `💀 [piconname:${p.aid}]: 予想[${p.choice === 'chou' ? '丁' : '半'}] ➡ はずれ...\n`; }
     }
-    await sendMessage(rid, msg + "[/info]"); 
-    gameState[rid] = null; 
+    await sendMessage(rid, msg + "[/info]"); gameState[rid] = null; await supabase.from('config').upsert({ key: 'last_game_time', value: Date.now().toString() });
 };
 
 const resolveDerby = async (rid) => {
-    let game = gameState[rid]; if (!game) return; clearTimeout(game.timeoutId); if (game.remindId) clearTimeout(game.remindId);
-    let stats = game.st, ws = [...stats], totalW = ws.reduce((a, b) => a + b, 0);
-    
+    let g = gameState[rid]; if (!g) return; clearTimeout(g.timeoutId); if (g.remindId) clearTimeout(g.remindId);
+    let stats = g.st, ws = [...stats], totalW = ws.reduce((a, b) => a + b, 0);
     let r1 = Math.random() * totalW, s1 = 0, first = 1;
     for(let i=0; i<6; i++){ s1 += ws[i]; if(r1 <= s1){ first = i+1; break; } }
-    
     ws[first-1] = 0; totalW = ws.reduce((a, b) => a + b, 0);
     let r2 = Math.random() * totalW, s2 = 0, second = 1;
     for(let i=0; i<6; i++){ s2 += ws[i]; if(r2 <= s2){ second = i+1; break; } }
     
-    let winCombo = first < second ? `${first}-${second}` : `${second}-${first}`, odd = game.oddsMap[winCombo];
-    
+    let winCombo = first < second ? `${first}-${second}` : `${second}-${first}`, odd = g.oddsMap[winCombo];
     let msg = `[info][title]🐎 ダービー レース結果[/title]各馬一斉にスタート！\n...\n第4コーナーを回って最後の直線！\n...\n\n先頭で駆け抜けたのは【 ${first} 】番と【 ${second} 】番の馬だぁぁぁ！！！\n\n🎯 的中馬連: 【 ${winCombo} 】 (${odd}倍)\n[hr]【 プレイヤー結果 】\n`;
-    
-    for(let p of game.players){
-        if(p.choice === winCombo){ 
-            let winAmt = Math.floor(p.bet * odd); await addMoney(p.aid, p.bet + winAmt); 
-            msg += `(cracker) [piconname:${p.aid}]: 的中！ (+${fNum(winAmt)} コイン)\n`; 
-        } else { 
-            msg += `💀 [piconname:${p.aid}]: 予想[${p.choice}] ➡ はずれ...\n`; 
-        }
+    for(let p of g.players){
+        if(p.choice === winCombo){ let winAmt = Math.floor(p.bet * odd); await addMoney(p.aid, p.bet + winAmt); msg += `(cracker) [piconname:${p.aid}]: 的中！ (+${fNum(winAmt)} コイン)\n`; } 
+        else { msg += `💀 [piconname:${p.aid}]: 予想[${p.choice}] ➡ はずれ...\n`; }
     }
-    await sendMessage(rid, msg + "[/info]"); 
-    gameState[rid] = null; 
+    await sendMessage(rid, msg + "[/info]"); gameState[rid] = null; await supabase.from('config').upsert({ key: 'last_game_time', value: Date.now().toString() });
 };
 // --- 前半ここまで ---
 // --- 後半ここから ---
@@ -325,53 +375,37 @@ app.post('/webhook', (req, res) => {
     const body = ev.body || "";
     const senderId = ev.account_id.toString();
     const msgId = ev.message_id;
-    
-    const today = getTodayStr();
-    const thisMonth = getThisMonthStr();
+    const today = getTodayStr(), thisMonth = getThisMonthStr();
 
     (async () => {
         try {
-            // --- 返信タグの解析 ---
             const rpMatch = body.match(/\[(?:rp|返信|qtmeta|reply)\s+aid=([0-9]+)/i);
             const repliedAid = rpMatch ? rpMatch[1] : null;
 
             // 1. プレイヤーデータの確実な取得と作成
             let { data: pData } = await supabase.from('players').select('*').eq('account_id', senderId).single();
-            
-            // 未登録なら無条件で作成する
             if (!pData) {
                 pData = { account_id: senderId, money: 0, debt: 0, slot_count: 0, work_limit: 5, msg_count: 0, job: 'サラリーマン' };
                 await supabase.from('players').insert(pData);
-            } 
-            // 登録済みで、普通のチャット（コマンド以外）なら仕事回数を回復
-            else if (gambleActive && !body.startsWith('/')) {
-                let mc = (pData.msg_count || 0) + 1; 
-                let wl = pData.work_limit || 5;
+            } else if (gambleActive && !body.startsWith('/')) {
+                let mc = (pData.msg_count || 0) + 1; let wl = pData.work_limit || 5;
                 if (mc >= (Math.floor(Math.random() * 21) + 30)) { mc = 0; if (wl < 10) wl++; }
                 pData.msg_count = mc; pData.work_limit = wl;
                 await supabase.from('players').update({ msg_count: mc, work_limit: wl }).eq('account_id', senderId);
             }
 
-            let myMoney = pData.money;
-            let myDebt = pData.debt || 0;
-            let myJob = pData.job || 'サラリーマン';
+            let myMoney = pData.money, myDebt = pData.debt || 0, myJob = pData.job || 'サラリーマン';
             let currentMonthlyDebt = (pData.debt_month === thisMonth) ? (pData.monthly_debt || 0) : 0;
 
-            // 2. ブラックリスト防衛
+            // 2. 防衛
             const { data: isBanned } = await supabase.from('blacklist').select('account_id').eq('account_id', senderId).single();
-            if (isBanned) { 
-                await kickTarget(roomId, [senderId], 'readonly'); 
-                await cw.delete(`/rooms/${roomId}/messages/${msgId}`).catch(()=>{}); 
-                return; 
-            }
-
-            // 3. スパム（連投）防衛
+            if (isBanned) { await kickTarget(roomId, [senderId], 'readonly'); await cw.delete(`/rooms/${roomId}/messages/${msgId}`).catch(()=>{}); return; }
             if (checkSpam(senderId) && !(await isUserAdmin(roomId, senderId))) {
                 await kickTarget(roomId, [senderId], 'readonly');
                 return sendTempMessage(roomId, `[info][title]⚠️ 警告[/title][piconname:${senderId}] 様\n連投行為を検知したため、発言権限を「閲覧のみ」に制限しました。[/info]`);
             }
 
-            // 4. 深夜0時リセット & 宝くじ抽選
+            // 3. 深夜0時リセット & 宝くじ
             if (localLastResetDate !== today) {
                 const { data: configDate } = await supabase.from('config').select('value').eq('key', 'last_reset_date').single();
                 if (!configDate || configDate.value !== today) {
@@ -380,38 +414,31 @@ app.post('/webhook', (req, res) => {
                     localLastResetDate = today;
                     
                     let resetMsg = `[info][title]🔄 日付更新のお知らせ[/title]深夜0時を回りました。\nスロット回数、おみくじ、お仕事制限がリセットされました！\n[hr]`;
-                    
                     const { data: tData } = await supabase.from('config').select('value').eq('key', 'lottery_tickets').single();
                     let tickets = tData ? JSON.parse(tData.value) : [];
                     if (tickets.length > 0) {
                         let win = Math.floor(Math.random() * 9999) + 1;
                         resetMsg += `[title]🎯 宝くじ 抽選結果発表[/title]本日の当選番号は...【 ${win} 】です！\n[hr]`;
-                        let payouts = {}; let winners = [];
-                        
+                        let payouts = {}, winners = [];
                         const checkPrize = (n, w) => {
                             if (n === w) return { p: 30000, name: '🥇 1等' };
-                            let prev = w - 1 < 1 ? 9999 : w - 1; 
-                            let next = w + 1 > 9999 ? 1 : w + 1;
+                            let prev = w - 1 < 1 ? 9999 : w - 1, next = w + 1 > 9999 ? 1 : w + 1;
                             if (n === prev || n === next) return { p: 15000, name: '🥈 前後賞' };
                             if (n % 1000 === w % 1000) return { p: 10000, name: '🥈 2等' }; 
                             if (n % 100 === w % 100) return { p: 5000, name: '🥉 3等' };    
                             if (n % 10 === w % 10) return { p: 1000, name: '🏅 4等' };      
                             return null;
                         };
-                        
                         for (let t of tickets) { 
                             let r = checkPrize(t.num, win); 
                             if(r) { winners.push({ a: t.aid, num: t.num, ...r }); payouts[t.aid] = (payouts[t.aid] || 0) + r.p; } 
                         }
-                        
                         if (winners.length > 0) {
                             for (let aid in payouts) await addMoney(aid, payouts[aid]);
                             winners.sort((a,b) => b.p - a.p); 
                             for (let w of winners.slice(0, 20)) resetMsg += `(cracker) [piconname:${w.a}]: 予想[${w.num}] ➡ ${w.name} (+${fNum(w.p)} コイン)\n`;
                             if (winners.length > 20) resetMsg += `...他 ${winners.length - 20} 件の当選！\n`;
-                        } else {
-                            resetMsg += `本日の当選者はいませんでした。明日の挑戦をお待ちしています！\n`;
-                        }
+                        } else resetMsg += `本日の当選者はいませんでした。明日の挑戦をお待ちしています！\n`;
                         await supabase.from('config').upsert({ key: 'lottery_tickets', value: '[]' });
                     }
                     sendMessage(roomId, resetMsg + `[/info]`);
@@ -420,7 +447,7 @@ app.post('/webhook', (req, res) => {
 
             // --- 📖 ヘルプコマンド ---
             if (body.trim() === '/help-gya') {
-                const h = `[info][title]🎰 カジノ＆ライフ 総合案内 (V39 FINAL)[/title]
+                const h = `[info][title]🎰 カジノ＆ライフ 総合案内 (V38 FINAL)[/title]
 【 🏦 銀行・ステータス 】
 ・ [code]/status[/code] : 状態確認
 ・ [code]/give [金額][/code] : 相手に送金 (税金10%)
@@ -434,13 +461,14 @@ app.post('/webhook', (req, res) => {
 ・ [code]/omikuji[/code] : 1日1回おみくじ (スロット確率変動)
 
 【 🎰 カジノ・宝くじ 】
-・ [code]/slot [掛金|max|half][/code] : スロット (1日5回)
+・ [code]/slot [掛金|max|half][/code] : スロット (1日3回)
 ・ [code]/buy-lot [連番|バラ] [枚数][/code] : 宝くじ
 
 【 🎲 テーブルゲーム 】
 ・ [code]/chouhan[/code] : 丁半ゲーム募集
 ・ [code]/cc[/code] : チンチロリン募集 ([code]/roll[/code] でサイコロ)
 ・ [code]/derby[/code] : ダービー募集 ([code]/bet [額] [馬連][/code])
+・ [code]/bj[/code] : ブラックジャック募集 ([code]/hit[/code] か [code]/stand[/code])
 
 【 👑 管理者専用 】
 ・ [code]/take [金][/code] : 特別資金付与
@@ -462,16 +490,11 @@ app.post('/webhook', (req, res) => {
 
             if (/(^|\n)\/fi-game\b/.test(body) && gambleActive && await isUserAdmin(roomId, senderId)) {
                 if (gameState[roomId] && gameState[roomId].state !== 'IDLE') {
-                    for (let p of gameState[roomId].players) {
-                        if (p.bet > 0) await addMoney(p.aid, p.bet);
-                    }
-                    clearTimeout(gameState[roomId].timeoutId);
-                    if (gameState[roomId].remindId) clearTimeout(gameState[roomId].remindId);
+                    for (let p of gameState[roomId].players) { if (p.bet > 0) await addMoney(p.aid, p.bet); }
+                    clearTimeout(gameState[roomId].timeoutId); if (gameState[roomId].remindId) clearTimeout(gameState[roomId].remindId);
                     gameState[roomId] = null;
                     return sendTempMessage(roomId, `[info][title]⚠️ ゲーム強制終了[/title]管理者によってゲームが強制終了されました。\n(※賭け金は全額返還されました)[/info]`);
-                } else {
-                    return sendTempMessage(roomId, `[info]⚠️ 進行中のゲームはありません。[/info]`);
-                }
+                } else return sendTempMessage(roomId, `[info]⚠️ 進行中のゲームはありません。[/info]`);
             }
 
             if (/(^|\n)\/(blacklist|reblacklist|remove-rank)\b/.test(body) && await isUserAdmin(roomId, senderId)) {
@@ -507,19 +530,12 @@ app.post('/webhook', (req, res) => {
                 }
             }
 
-            if (body.startsWith('/st-gya') && await isUserAdmin(roomId, senderId)) { 
-                gambleActive = true; await supabase.from('config').upsert({key:'gamble_active', value:'true'}); 
-                return sendMessage(roomId, `[info][title]🎰 カジノ＆ライフ[/title]システムが【 有効 】になりました！[/info]`); 
-            }
-            if (body.startsWith('/fi-gya') && await isUserAdmin(roomId, senderId)) { 
-                gambleActive = false; await supabase.from('config').upsert({key:'gamble_active', value:'false'}); 
-                return sendMessage(roomId, `[info][title]🚫 カジノ＆ライフ[/title]システムが【 停止 】しました。[/info]`); 
-            }
+            if (body.startsWith('/st-gya') && await isUserAdmin(roomId, senderId)) { gambleActive = true; await supabase.from('config').upsert({key:'gamble_active', value:'true'}); return sendMessage(roomId, `[info][title]🎰 カジノ＆ライフ[/title]システムが【 有効 】になりました！[/info]`); }
+            if (body.startsWith('/fi-gya') && await isUserAdmin(roomId, senderId)) { gambleActive = false; await supabase.from('config').upsert({key:'gamble_active', value:'false'}); return sendMessage(roomId, `[info][title]🚫 カジノ＆ライフ[/title]システムが【 停止 】しました。[/info]`); }
 
             // --- ⛩️ おみくじ ---
             if (/(^|\n)\/omikuji\b/.test(body) && gambleActive) {
                 if (pData.omikuji_date === today) return sendTempMessage(roomId, `[info][title]⚠️ おみくじ[/title]${makeRp(senderId, roomId, msgId)}\n本日のおみくじは既に引いています。\n(結果: ${pData.omikuji_result})[/info]`);
-                
                 let r = Math.random() * 100, res = "", eff = "";
                 if(r < 10) { res = "大吉"; eff = "(cracker) スロット確率が【大幅UP】！"; } 
                 else if(r < 30) { res = "中吉"; eff = "(cracker) スロット確率が【少しUP】！"; } 
@@ -532,13 +548,12 @@ app.post('/webhook', (req, res) => {
                 return sendMessage(roomId, `[info][title]⛩️ おみくじ結果[/title]${makeRp(senderId, roomId, msgId)}\n[hr]今日の運勢は...【 ${res} 】です！\n\n${eff}[/info]`);
             }
 
-            // --- 🏦 銀行関連 (借金・送金) ---
+            // --- 🏦 銀行関連 ---
             const debtMatch = body.match(/(^|\n)\/debt\s+([0-9]+)/);
             if (debtMatch && gambleActive) {
                 let amt = parseInt(debtMatch[2], 10);
                 if (amt > 0) {
-                    if (currentMonthlyDebt + amt > 5000) return sendTempMessage(roomId, `[info][title]⚠️ 借金上限エラー[/title]${makeRp(senderId, roomId, msgId)}\n1ヶ月の借金上限(5000)を超過します！\n(今月は既に ${cDebt} コイン借りています)[/info]`);
-                    
+                    if (currentMonthlyDebt + amt > 5000) return sendTempMessage(roomId, `[info][title]⚠️ 借金上限エラー[/title]${makeRp(senderId, roomId, msgId)}\n1ヶ月の借金上限(5000)を超過します！\n(今月は既に ${currentMonthlyDebt} コイン借りています)[/info]`);
                     await supabase.from('players').update({ money: myMoney + amt, debt: myDebt + amt, monthly_debt: currentMonthlyDebt + amt, debt_month: thisMonth }).eq('account_id', senderId);
                     return sendTempMessage(roomId, `[info][title]💳 お借り入れ完了[/title][piconname:${senderId}] 様\n${fNum(amt)} コインを借金しました。\n[hr]今月の借金可能枠: 残り ${fNum(5000 - (currentMonthlyDebt + amt))} コイン[/info]`);
                 }
@@ -547,25 +562,21 @@ app.post('/webhook', (req, res) => {
             if (/(^|\n)\/give/.test(body) && gambleActive) {
                 let targetAid = repliedAid || (body.match(/(^|\n)\/give\s+([0-9]+)\s+([0-9]+)/)||[])[2];
                 let amt = parseInt((body.match(/(^|\n)\/give\s+([0-9]+)$/)||[])[2] || (body.match(/(^|\n)\/give\s+[0-9]+\s+([0-9]+)/)||[])[3], 10);
-                
                 if (targetAid && amt > 0) {
                     let av = Math.max(0, myMoney - myDebt); 
                     if (av < amt) return sendTempMessage(roomId, `[info][title]⚠️ 送金エラー[/title]${makeRp(senderId, roomId, msgId)}\n送金枠(純資産)が不足しています！\n(借金があるため、送金可能額は ${fNum(av)} コインのみです)[/info]`);
                     
                     let tax = Math.floor(amt * 0.10); let rAmt = amt - tax;
-                    
                     await supabase.from('players').update({ money: myMoney - amt }).eq('account_id', senderId);
                     const { data: rc } = await supabase.from('players').select('*').eq('account_id', targetAid).single();
                     if (rc) await supabase.from('players').update({ money: rc.money + rAmt }).eq('account_id', targetAid);
                     else await supabase.from('players').insert({ account_id: targetAid, money: rAmt, debt: 0 });
-                    
                     return sendTempMessage(roomId, `[info][title]🎁 送金完了[/title][piconname:${senderId}] ➡ [piconname:${targetAid}]\n${fNum(amt)} コインを送金しました。\n[hr]※システム税 10% (${fNum(tax)} コイン) が引かれ、相手には ${fNum(rAmt)} コインが届きました。[/info]`);
                 }
             }
 
-            // --- 📊 ステータス & ランキング ---
             if (body.trim() === '/status') {
-                const remSlot = Math.max(0, 5 - pData.slot_count); // スロット5回対応
+                const remSlot = Math.max(0, 3 - pData.slot_count);
                 const dStr = myDebt > 0 ? `\n💳 借金: -${fNum(myDebt)} コイン` : '';
                 return sendTempMessage(roomId, `[info][title]📊 プレイヤー情報[/title][piconname:${senderId}] 様\n\n💰 所持金: ${fNum(myMoney)} コイン${dStr}\n💎 純資産: ${fNum(myMoney - myDebt)} コイン\n[hr]👔 職業: ${myJob}\n🎰 スロット残り: ${remSlot} 回\n💼 お仕事残り: ${pData.work_limit} 回\n⛩️ 今日の運勢: ${pData.omikuji_result || '未引'}\n[hr]※1分後に自動消去されます[/info]`);
             }
@@ -575,14 +586,12 @@ app.post('/webhook', (req, res) => {
                 let eI = eD ? JSON.parse(eD.value) : [];
                 const { data: ls } = await supabase.from('players').select('*'); 
                 let f = ls ? ls.filter(d => !eI.includes(d.account_id)) : [];
-                
                 f.sort((a,b) => ((b.money||0) - (b.debt||0)) - ((a.money||0) - (a.debt||0)));
                 let s = f.slice(0, 10).map((d, i) => {
                     let net = (d.money||0) - (d.debt||0); 
                     let md = i===0 ? "🥇" : (i===1 ? "🥈" : (i===2 ? "🥉" : "🔹")); 
                     return `${md} ${i+1}位: [piconname:${d.account_id}]\n　💰 純資産: ${fNum(net)} コイン ${d.debt>0 ? `(借金:-${fNum(d.debt)})`:''} [${d.job||'サラリーマン'}]`;
                 }).join('\n[hr]');
-                
                 return sendTempMessage(roomId, `[info][title]👑 純資産ランキング TOP10[/title]${s}\n[hr]※5分後に自動消滅します[/info]`, 300000);
             }
 
@@ -592,7 +601,6 @@ app.post('/webhook', (req, res) => {
                 const jn = cJobMatch[2]; const cs = {'サラリーマン': 0, '公務員': 2000, '警察官': 3000, 'プロスポーツ選手': 5000};
                 if (myJob === jn) return sendTempMessage(roomId, `[info]⚠️ ${makeRp(senderId, roomId, msgId)}\nすでに ${jn} に就いています！[/info]`);
                 if (myMoney < cs[jn]) return sendTempMessage(roomId, `[info]⚠️ ${makeRp(senderId, roomId, msgId)}\nお金が足りません！(転職費用: ${fNum(cs[jn])} コイン)[/info]`);
-                
                 await supabase.from('players').update({ job: jn, money: myMoney - cs[jn] }).eq('account_id', senderId);
                 return sendTempMessage(roomId, `[info][title]🎉 転職完了[/title][piconname:${senderId}] 様\n本日より「${jn}」としてご活躍ください！ (-${fNum(cs[jn])} コイン)[/info]`);
             } else if (body.trim() === '/job' && gambleActive) {
@@ -646,7 +654,7 @@ app.post('/webhook', (req, res) => {
             // --- 🎰 スロット ---
             const sM = body.match(/(^|\n)\/slot\s+(max|half|[0-9]+)/);
             if (sM && gambleActive) {
-                if (pData.slot_count >= 5) return sendTempMessage(roomId, `[info]⚠️ ${makeRp(senderId, roomId, msgId)}\n本日のスロットは上限(1日5回)に達しました！[/info]`);
+                if (pData.slot_count >= 3) return sendTempMessage(roomId, `[info]⚠️ ${makeRp(senderId, roomId, msgId)}\n本日のスロットは上限(1日3回)に達しました！[/info]`);
                 if (Date.now() - Number(pData.last_slot_time || 0) < 600000) return sendTempMessage(roomId, `[info]⚠️ ${makeRp(senderId, roomId, msgId)}\nスロット休憩中(10分間隔)です！[/info]`);
                 
                 let bet = sM[2] === 'max' ? myMoney : (sM[2] === 'half' ? Math.floor(myMoney / 2) : parseInt(sM[2], 10));
@@ -670,8 +678,7 @@ app.post('/webhook', (req, res) => {
                     else { ml=0; let o=["🍉","🍋","🔔","🍇","7️⃣","6️⃣","5️⃣"]; let r1=o[Math.floor(Math.random()*o.length)], r2=o[Math.floor(Math.random()*o.length)], r3=o[Math.floor(Math.random()*o.length)]; while(r1===r2&&r2===r3) r3=o[Math.floor(Math.random()*o.length)]; sy=`${r1} | ${r2} | ${r3}`; res="💀 はずれ..."; }
                     
                     let wA = bet * ml; if (wA > 0) await addMoney(senderId, wA);
-                    
-                    return sendMessage(roomId, `[info][title]🎰 SLOT MACHINE ${oM}[/title]${makeRp(senderId, roomId, msgId)}\n[hr]　▶ [ ${sy} ] ◀　\n[hr]${res}\n\n賭け金: ${fNum(bet)} ➡ 獲得: ${fNum(wA)} コイン\n(残り回数: ${5 - (pData.slot_count + 1)}回)[/info]`);
+                    return sendMessage(roomId, `[info][title]🎰 SLOT MACHINE ${oM}[/title]${makeRp(senderId, roomId, msgId)}\n[hr]　▶ [ ${sy} ] ◀　\n[hr]${res}\n\n賭け金: ${fNum(bet)} ➡ 獲得: ${fNum(wA)} コイン\n(残り回数: ${3 - (pData.slot_count + 1)}回)[/info]`);
                 } else return sendTempMessage(roomId, `[info]⚠️ ${makeRp(senderId, roomId, msgId)} お金が足りません！[/info]`);
             }
 
@@ -712,15 +719,19 @@ app.post('/webhook', (req, res) => {
                 }
             }
 
-            // --- 🎲 ゲーム共通 (募集・参加・退出・進行) ---
-            if (body.match(/(^|\n)\/(chouhan|cc|derby)\b/) && gambleActive) {
+            // --- 🎲 ゲーム共通 (募集・参加・開始・退出・ベット) ---
+            const { data: lg } = await supabase.from('config').select('value').eq('key', 'last_game_time').single();
+            const gCD = (Date.now() - parseInt(lg ? lg.value : 0)) < 180000; // 3分
+
+            if (body.match(/(^|\n)\/(chouhan|cc|derby|bj)\b/) && gambleActive) {
                 if (gameState[roomId]) return sendTempMessage(roomId, `[info][title]⚠️ エラー[/title]現在、別のゲームが進行中です。終了までお待ちください。[/info]`);
+                if (gCD) return sendTempMessage(roomId, `[info][title]⚠️ 待機中[/title]ゲームは3分間隔です。もう少しお待ちください。[/info]`);
                 
-                let t = body.includes('/derby') ? 'derby' : (body.includes('/cc') ? 'cc' : 'chouhan');
+                let t = body.includes('/derby') ? 'derby' : (body.includes('/cc') ? 'cc' : (body.includes('/bj') ? 'bj' : 'chouhan'));
                 gameState[roomId] = { type: t, state: 'RECRUITING', host: senderId, players: [{ aid: senderId, bet: 0 }] };
                 
-                let tN = t==='derby' ? "🐎 みんなでダービー" : (t==='cc' ? "🎲 チンチロリン" : "🎲 丁半ゲーム"); 
-                let ex = t==='derby' ? "[code]/join derby[/code]" : (t==='cc' ? "[code]/join cc[/code]" : "[code]/join chouhan[/code]");
+                let tN = t==='derby' ? "🐎 みんなでダービー" : (t==='cc' ? "🎲 チンチロリン" : (t==='bj' ? "🃏 ブラックジャック" : "🎲 丁半ゲーム")); 
+                let ex = t==='derby' ? "[code]/join derby[/code]" : (t==='cc' ? "[code]/join cc[/code]" : (t==='bj' ? "[code]/join bj[/code]" : "[code]/join chouhan[/code]"));
                 
                 if (t === 'derby') {
                     let dO = generateDerby(); 
@@ -734,7 +745,7 @@ app.post('/webhook', (req, res) => {
                 return;
             }
 
-            if (body.match(/(^|\n)\/join\s+(chouhan|cc|derby)/) && gambleActive && gameState[roomId]?.state === 'RECRUITING') {
+            if (body.match(/(^|\n)\/join\s+(chouhan|cc|derby|bj)/) && gambleActive && gameState[roomId]?.state === 'RECRUITING') {
                 if (!gameState[roomId].players.find(x => x.aid === senderId)) { 
                     gameState[roomId].players.push({ aid: senderId, bet: 0 }); 
                     sendMessage(roomId, `[info]🙋‍♂️ [piconname:${senderId}] が参加しました！ (現在 ${gameState[roomId].players.length}人)[/info]`); 
@@ -742,8 +753,8 @@ app.post('/webhook', (req, res) => {
                 return;
             }
 
-            if (body.match(/(^|\n)\/start(chouhan|cc|derby)/) && gambleActive && gameState[roomId]?.state === 'RECRUITING' && gameState[roomId].host === senderId) {
-                if (gameState[roomId].players.length < 2) return sendTempMessage(roomId, `[info]⚠️ 参加者が2人以上でないと開始できません。[/info]`);
+            if (body.match(/(^|\n)\/start(chouhan|cc|derby|bj)/) && gambleActive && gameState[roomId]?.state === 'RECRUITING' && gameState[roomId].host === senderId) {
+                if (gameState[roomId].players.length < 2 && gameState[roomId].type !== 'bj') return sendTempMessage(roomId, `[info]⚠️ 参加者が2人以上でないと開始できません。[/info]`);
                 clearTimeout(gameState[roomId].timeoutId); 
                 handleGameTimeout(roomId); 
                 return;
@@ -754,7 +765,7 @@ app.post('/webhook', (req, res) => {
                 if (idx !== -1) {
                     let p = gameState[roomId].players[idx]; 
                     gameState[roomId].players.splice(idx, 1);
-                    if (p.bet > 0) await addMoney(senderId, p.bet); 
+                    if (p.bet > 0) await addMoney(senderId, p.bet); // 返金
                     
                     sendTempMessage(roomId, `[info]🚪 [piconname:${senderId}] が退出しました。[/info]`);
                     if (gameState[roomId].players.length === 0) { 
@@ -768,19 +779,15 @@ app.post('/webhook', (req, res) => {
                 return;
             }
 
-            // --- 🎲 ゲーム (ベット・アクション) ---
-            const bM = body.match(/(^|\n)\/bet\s+(max|half|[0-9]+)(?:[\s　]+([0-9]+[-ー][0-9]+))?/);
+            const bM = body.match(/(^|\n)\/bet\s+(max|half|[0-9]+)(?:\s+([0-9]+-[0-9]+))?/);
             if (bM && gambleActive && gameState[roomId]?.state === 'BETTING') {
                 let pl = gameState[roomId].players.find(x => x.aid === senderId);
                 if (pl && pl.bet === 0) {
                     let b = bM[2] === 'max' ? myMoney : (bM[2] === 'half' ? Math.floor(myMoney/2) : parseInt(bM[2], 10));
                     if (b > 0 && myMoney >= b) {
                         if (gameState[roomId].type === 'derby') {
-                            let hStr = bM[3]; 
-                            if (!hStr) return sendTempMessage(roomId, `[info]⚠️ 馬連を正しく指定してください\n例: [code]/bet 100 1-2[/code][/info]`);
-                            let pts = hStr.replace('ー', '-').split('-');
-                            let h = `${Math.min(pts[0], pts[1])}-${Math.max(pts[0], pts[1])}`;
-                            if (!gameState[roomId].oddsMap[h]) return sendTempMessage(roomId, `[info]⚠️ 指定された馬連(${h})は存在しません！ 1〜6の数字を選んでください。[/info]`);
+                            let h = bM[3]; 
+                            if (!h || !gameState[roomId].oddsMap[h]) return sendTempMessage(roomId, `[info]⚠️ 馬連(例: 1-2)を正しく指定してください\n例: [code]/bet 100 1-2[/code][/info]`);
                             pl.choice = h;
                         }
                         pl.bet = b; 
@@ -792,6 +799,7 @@ app.post('/webhook', (req, res) => {
                 return;
             }
 
+            // --- 🎲 アクション処理 (丁半・チンチロ・BJ) ---
             if ((body.trim() === '/chou' || body.trim() === '/han') && gambleActive && gameState[roomId]?.type === 'chouhan' && gameState[roomId].state === 'ACTION') {
                 let pl = gameState[roomId].players.find(x => x.aid === senderId);
                 if (pl && !pl.choice) { 
@@ -810,11 +818,127 @@ app.post('/webhook', (req, res) => {
                 }
             }
 
+            if ((body.trim() === '/hit' || body.trim() === '/stand') && gambleActive && gameState[roomId]?.type === 'bj' && gameState[roomId].state === 'ACTION') {
+                let g = gameState[roomId];
+                let pl = g.players[g.turnIndex];
+                if (pl && pl.aid === senderId && pl.status === 'playing') {
+                    if (body.trim() === '/hit') {
+                        let c = g.deck.pop();
+                        pl.hand.push(c);
+                        
+                        let score = 0, aces = 0;
+                        for (let cd of pl.hand) { if (cd.rank === 'A') { aces++; score += 11; } else score += cd.val; }
+                        while (score > 21 && aces > 0) { score -= 10; aces--; }
+                        
+                        let hStr = pl.hand.map(cd => cd.suit + cd.rank).join(' ');
+                        
+                        if (score > 21) {
+                            pl.status = 'bust';
+                            await sendTempMessage(roomId, `[info][piconname:${pl.aid}] ➡ 引いたカード: ${c.suit}${c.rank}\n手札: ${hStr} (スコア: ${score})\n💥 バーストしました！[/info]`);
+                            g.turnIndex++; await nextBJTurn(roomId);
+                        } else if (score === 21) {
+                            pl.status = 'stand';
+                            await sendTempMessage(roomId, `[info][piconname:${pl.aid}] ➡ 引いたカード: ${c.suit}${c.rank}\n手札: ${hStr} (スコア: ${score})\n✨ 21到達！自動スタンドします。[/info]`);
+                            g.turnIndex++; await nextBJTurn(roomId);
+                        } else {
+                            await sendTempMessage(roomId, `[info][title]🃏 ターン継続[/title][piconname:${pl.aid}]\n引いたカード: ${c.suit}${c.rank}\n手札: ${hStr} (スコア: ${score})\n\n👉 [code]/hit[/code] または [code]/stand[/code][/info]`);
+                            startGameTimer(roomId, 60000);
+                        }
+                    } else {
+                        pl.status = 'stand';
+                        let score = 0, aces = 0;
+                        for (let cd of pl.hand) { if (cd.rank === 'A') { aces++; score += 11; } else score += cd.val; }
+                        while (score > 21 && aces > 0) { score -= 10; aces--; }
+                        await sendTempMessage(roomId, `[info][piconname:${pl.aid}] スタンドしました。 (スコア: ${score})[/info]`);
+                        g.turnIndex++; await nextBJTurn(roomId);
+                    }
+                }
+            }
+
         } catch (error) { console.error(error); }
     })();
 });
 
+// --- BJ専用ヘルパー群（配置の都合でここに配置） ---
+const createDeck = () => {
+    const suits = ['♠', '♥', '♣', '♦'];
+    const ranks = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+    let deck = [];
+    for (let s of suits) {
+        for (let r of ranks) {
+            let val = (r === 'A') ? 1 : (['J', 'Q', 'K'].includes(r) ? 10 : parseInt(r));
+            deck.push({ suit: s, rank: r, val: val });
+        }
+    }
+    for(let i = deck.length - 1; i > 0; i--){
+        const r = Math.floor(Math.random() * (i + 1));
+        [deck[i], deck[r]] = [deck[r], deck[i]];
+    }
+    return deck;
+};
 
+const nextBJTurn = async (rid) => {
+    let g = gameState[rid]; if (!g || g.type !== 'bj') return;
+    while (g.turnIndex < g.players.length) {
+        let p = g.players[g.turnIndex];
+        if (p.status !== 'playing') { g.turnIndex++; continue; }
+        
+        let score = 0, aces = 0;
+        for (let cd of p.hand) { if (cd.rank === 'A') { aces++; score += 11; } else score += cd.val; }
+        while (score > 21 && aces > 0) { score -= 10; aces--; }
+        
+        let hStr = p.hand.map(c => c.suit+c.rank).join(' ');
+        await sendTempMessage(rid, `[info][title]🃏 ターン進行[/title][piconname:${p.aid}] さんの番です！\n手札: ${hStr} (スコア: ${score})\n\n👉 [code]/hit[/code] (引く) または [code]/stand[/code] (引かない) を入力してください。\n(制限1分)[/info]`);
+        startGameTimer(rid, 60000); 
+        return;
+    }
+    await resolveBJ(rid);
+};
+
+const resolveBJ = async (rid) => {
+    let g = gameState[rid]; if (!g) return; clearTimeout(g.timeoutId);
+    let dHand = g.dealerHand;
+    let dScore = 0, dAces = 0;
+    const updateDScore = () => {
+        dScore = 0; dAces = 0;
+        for (let c of dHand) { if (c.rank === 'A') { dAces++; dScore += 11; } else dScore += c.val; }
+        while (dScore > 21 && dAces > 0) { dScore -= 10; dAces--; }
+    };
+    updateDScore();
+    
+    let msg = `[info][title]🃏 ブラックジャック 結果発表[/title]【 ディーラーのターン 】\n伏せカードは ${dHand[1].suit}${dHand[1].rank} でした。\n`;
+    
+    while(dScore < 17) {
+        let c = g.deck.pop(); dHand.push(c); updateDScore();
+        msg += `➡ 引いたカード: ${c.suit}${c.rank}\n`;
+    }
+    let dStr = dHand.map(c => c.suit+c.rank).join(' ');
+    msg += `最終手札: ${dStr} (スコア: ${dScore})\n`;
+    if (dScore > 21) msg += `💥 ディーラーバースト！\n`;
+    msg += `[hr]【 プレイヤー結果 】\n`;
+    
+    for (let p of g.players) {
+        let pScore = 0, pAces = 0;
+        for (let c of p.hand) { if (c.rank === 'A') { pAces++; pScore += 11; } else pScore += c.val; }
+        while (pScore > 21 && pAces > 0) { pScore -= 10; pAces--; }
+        
+        let winAmt = 0; let resTxt = "";
+        
+        if (p.status === 'bust') { resTxt = `💀 負け (バースト)`; } 
+        else if (p.status === 'bj') {
+            if (dScore === 21 && dHand.length === 2) { resTxt = `😐 引き分け (BJ同士)`; await addMoney(p.aid, p.bet); } 
+            else { winAmt = Math.floor(p.bet * 2.5); resTxt = `(cracker) 勝利！ (BJ: 配当2.5倍) (+${fNum(winAmt)})`; await addMoney(p.aid, p.bet + winAmt); }
+        } else {
+            if (dScore > 21 || pScore > dScore) { winAmt = p.bet * 2; resTxt = `🎉 勝利！ (+${fNum(winAmt)})`; await addMoney(p.aid, p.bet + winAmt); } 
+            else if (pScore === dScore) { resTxt = `😐 引き分け (返金)`; await addMoney(p.aid, p.bet); } 
+            else { resTxt = `💀 負け`; }
+        }
+        msg += `[piconname:${p.aid}]: スコア ${pScore} ➡ ${resTxt}\n`;
+    }
+    await sendMessage(rid, msg + "[/info]");
+    gameState[rid] = null;
+    await supabase.from('config').upsert({ key: 'last_game_time', value: Date.now().toString() });
+};
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Run ${PORT}`));
