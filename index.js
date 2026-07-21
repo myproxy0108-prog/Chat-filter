@@ -123,7 +123,6 @@ const checkSpam = (accountId) => {
 
 // --- ゲームエンジン ---
 
-// ルーレットの判定
 const isRouletteWin = (betChoice, resultNumber) => {
     if (betChoice === 'red') return [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36].includes(resultNumber);
     if (betChoice === 'black') return [2,4,6,8,10,11,13,15,17,20,22,24,26,28,29,31,33,35].includes(resultNumber);
@@ -322,7 +321,7 @@ const handleGameTimeout = async (roomId) => {
     if (!game || game.state === 'IDLE') return;
 
     if (game.state === 'RECRUITING') {
-        let isEnoughPlayers = ['bj', 'poker', 'yacht', 'cc', 'sicbo', 'roulette'].includes(game.type) ? (game.players.length >= 1) : (game.players.length >= 2);
+        let isEnoughPlayers = ['bj', 'poker', 'yacht', 'cc', 'sicbo', 'rolet'].includes(game.type) ? (game.players.length >= 1) : (game.players.length >= 2);
         
         if (isEnoughPlayers) {
             game.state = 'BETTING';
@@ -334,7 +333,7 @@ const handleGameTimeout = async (roomId) => {
                 let ex = `/bet [額] dai か /bet [額] shou か /bet [額] any`;
                 await sendTempMessage(roomId, `[info][title]⏳ 募集終了・ゲーム開始[/title]参加者が確定しました。\n\n${ex}\n[hr](※制限1分。 /bet max や /bet half も使えます)[/info]`);
                 startGameTimer(roomId, 60000);
-            } else if (game.type === 'roulette') {
+            } else if (game.type === 'rolet') {
                 let ex = `/bet [額] [予想] (red/black/even/odd/high/low/数字)`;
                 await sendTempMessage(roomId, `[info][title]⏳ 募集終了・ゲーム開始[/title]参加者が確定しました。\n\n${ex}\n[hr](※制限1分。 /bet max や /bet half も使えます)[/info]`);
                 startGameTimer(roomId, 60000);
@@ -359,7 +358,7 @@ const handleGameTimeout = async (roomId) => {
             await sendTempMessage(roomId, `[info][title]⏳ タイムアウト[/title]時間切れのため、未ベットのプレイヤーを退出させました。\n${kickedAids.map(a => `[piconname:${a}]`).join(' ')}[/info]`);
         }
         
-        let isEnoughPlayers = ['bj', 'poker', 'yacht', 'cc', 'sicbo', 'roulette'].includes(game.type) ? (game.players.length >= 1) : (game.players.length >= 2);
+        let isEnoughPlayers = ['bj', 'poker', 'yacht', 'cc', 'sicbo', 'rolet'].includes(game.type) ? (game.players.length >= 1) : (game.players.length >= 2);
         
         if (!isEnoughPlayers) {
             for (let player of game.players) {
@@ -420,7 +419,7 @@ const checkGameProgress = async (roomId) => {
         } else if (game.type === 'sicbo') {
             clearTimeout(game.timeoutId);
             await proceedBotSicbo(roomId);
-        } else if (game.type === 'roulette') {
+        } else if (game.type === 'rolet') {
             clearTimeout(game.timeoutId);
             await proceedBotRoulette(roomId);
         } else if (game.type === 'bj') {
@@ -619,15 +618,18 @@ const proceedBotYachtTurn = async (roomId) => {
     await sleep(1000);
     
     let msgRes = await chatworkClient.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(`[info]🎲 [ディーラー] サイコロを振っています...[/info]`)}`);
-    let mId = msgRes.data.message_id;
-    for(let i=0; i<3; i++) {
-        await sleep(1000);
-        let tempD = Array.from({length:5}, ()=>Math.floor(Math.random()*6)+1);
-        await editMessage(roomId, mId, `[info]🎲 [ディーラー] サイコロを振っています...\n[ ${tempD.map(d=>`🎲${d}`).join(' ')} ][/info]`);
+    if (msgRes && msgRes.data) {
+        let mId = msgRes.data.message_id;
+        for(let i=0; i<8; i++) {
+            await sleep(400);
+            let tempD = Array.from({length:5}, ()=>Math.floor(Math.random()*6)+1);
+            await editMessage(roomId, mId, `[info]🎲 [ディーラー] サイコロを振っています...\n[ ${tempD.map(d=>`🎲${d}`).join(' ')} ][/info]`);
+        }
+        game.botDice = Array.from({length:5}, ()=>Math.floor(Math.random()*6)+1);
+        await editMessage(roomId, mId, `[info]🎲 [ディーラー] サイコロを振りました。\n[ ${game.botDice.map(d=>`🎲${d}`).join(' ')} ][/info]`);
+    } else {
+        game.botDice = Array.from({length:5}, ()=>Math.floor(Math.random()*6)+1);
     }
-
-    game.botDice = Array.from({length:5}, ()=>Math.floor(Math.random()*6)+1);
-    await editMessage(roomId, mId, `[info]🎲 [ディーラー] サイコロを振りました。\n[ ${game.botDice.map(d=>`🎲${d}`).join(' ')} ][/info]`);
     await sleep(2000);
     
     for (let roll = 2; roll <= 3; roll++) {
@@ -645,16 +647,19 @@ const proceedBotYachtTurn = async (roomId) => {
             await sleep(1500);
             
             let cMsgRes = await chatworkClient.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(`[info]🎲 [ディーラー] サイコロを振り直しています...[/info]`)}`);
-            let cmId = cMsgRes.data.message_id;
-            for(let i=0; i<3; i++) {
-                await sleep(1000);
-                let tempD = [...game.botDice];
-                changeIndices.forEach(idx => tempD[idx] = Math.floor(Math.random()*6)+1);
-                await editMessage(roomId, cmId, `[info]🎲 [ディーラー] サイコロを振り直しています...\n[ ${tempD.map(d=>`🎲${d}`).join(' ')} ][/info]`);
+            if (cMsgRes && cMsgRes.data) {
+                let cmId = cMsgRes.data.message_id;
+                for(let i=0; i<8; i++) {
+                    await sleep(400);
+                    let tempD = [...game.botDice];
+                    changeIndices.forEach(idx => tempD[idx] = Math.floor(Math.random()*6)+1);
+                    await editMessage(roomId, cmId, `[info]🎲 [ディーラー] サイコロを振り直しています...\n[ ${tempD.map(d=>`🎲${d}`).join(' ')} ][/info]`);
+                }
+                changeIndices.forEach(idx => game.botDice[idx] = Math.floor(Math.random() * 6) + 1);
+                await editMessage(roomId, cmId, `[info]🎲 [ディーラー] サイコロを振り直しました。(${roll}回目)\n[ ${game.botDice.map(d=>`🎲${d}`).join(' ')} ][/info]`);
+            } else {
+                changeIndices.forEach(idx => game.botDice[idx] = Math.floor(Math.random() * 6) + 1);
             }
-            
-            changeIndices.forEach(idx => game.botDice[idx] = Math.floor(Math.random() * 6) + 1);
-            await editMessage(roomId, cmId, `[info]🎲 [ディーラー] サイコロを振り直しました。(${roll}回目)\n[ ${game.botDice.map(d=>`🎲${d}`).join(' ')} ][/info]`);
             await sleep(2000);
             
             if (roll === 3) {
@@ -677,15 +682,18 @@ const proceedBotChinchiroTurn = async (roomId) => {
     await sleep(1000);
     
     let msgRes = await chatworkClient.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(`[info]🎲 [ディーラー] サイコロを振っています...[/info]`)}`);
-    let mId = msgRes.data.message_id;
-    for(let i=0; i<3; i++) {
-        await sleep(1000);
-        let tempD = [Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1];
-        await editMessage(roomId, mId, `[info]🎲 [ディーラー] サイコロを振っています...\n[ ${tempD.join(', ')} ][/info]`);
+    if (msgRes && msgRes.data) {
+        let mId = msgRes.data.message_id;
+        for(let i=0; i<8; i++) {
+            await sleep(400);
+            let tempD = [Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1];
+            await editMessage(roomId, mId, `[info]🎲 [ディーラー] サイコロを振っています...\n[ ${tempD.join(', ')} ][/info]`);
+        }
+        game.botRoll = generateChinchiroRoll();
+        await editMessage(roomId, mId, `[info]🎲 [ディーラー] の出目: [ ${game.botRoll.dice.join(', ')} ] ➡ 『 ${game.botRoll.name} 』[/info]`);
+    } else {
+        game.botRoll = generateChinchiroRoll();
     }
-    
-    game.botRoll = generateChinchiroRoll();
-    await editMessage(roomId, mId, `[info]🎲 [ディーラー] の出目: [ ${game.botRoll.dice.join(', ')} ] ➡ 『 ${game.botRoll.name} 』[/info]`);
     await sleep(2000);
     await resolveChinchiro(roomId);
 };
@@ -694,58 +702,74 @@ const proceedBotChouhan = async (roomId) => {
     await sendMessage(roomId, `/roll`);
     await sleep(1000);
     let msgRes = await chatworkClient.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(`[info]🎲 [ディーラー] 壺を振っています... [ ? ] [ ? ][/info]`)}`);
-    let mId = msgRes.data.message_id;
-    for(let i=0; i<4; i++) {
-        await sleep(1000);
-        let tempD = [Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1];
-        await editMessage(roomId, mId, `[info]🎲 [ディーラー] 壺を振っています... [ ${tempD[0]} ] [ ${tempD[1]} ][/info]`);
+    if (msgRes && msgRes.data) {
+        let mId = msgRes.data.message_id;
+        for(let i=0; i<8; i++) {
+            await sleep(400);
+            let tempD = [Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1];
+            await editMessage(roomId, mId, `[info]🎲 [ディーラー] 壺を振っています...\nｶﾗｶﾗ... [ ${tempD[0]} ] [ ${tempD[1]} ][/info]`);
+        }
+        await sleep(600);
+        await resolveChouhan(roomId, mId);
+    } else {
+        await resolveChouhan(roomId);
     }
-    await sleep(1000);
-    await resolveChouhan(roomId, mId);
 };
 
 const proceedBotSicbo = async (roomId) => {
     await sendMessage(roomId, `/roll`);
     await sleep(1000);
     let msgRes = await chatworkClient.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(`[info]🎲 [ディーラー] ダイスマシン回転中... [ ? ] [ ? ] [ ? ][/info]`)}`);
-    let mId = msgRes.data.message_id;
-    for(let i=0; i<4; i++) {
-        await sleep(1000);
-        let tempD = [Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1];
-        await editMessage(roomId, mId, `[info]🎲 [ディーラー] ダイスマシン回転中... [ ${tempD[0]} ] [ ${tempD[1]} ] [ ${tempD[2]} ][/info]`);
+    if (msgRes && msgRes.data) {
+        let mId = msgRes.data.message_id;
+        for(let i=0; i<8; i++) {
+            await sleep(400);
+            let tempD = [Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1];
+            await editMessage(roomId, mId, `[info]🎲 [ディーラー] ダイスマシン回転中...\nｶﾗｶﾗｶﾗ... [ ${tempD[0]} ] [ ${tempD[1]} ] [ ${tempD[2]} ][/info]`);
+        }
+        await sleep(600);
+        await resolveSicbo(roomId, mId);
+    } else {
+        await resolveSicbo(roomId);
     }
-    await sleep(1000);
-    await resolveSicbo(roomId, mId);
 };
 
 const proceedBotRoulette = async (roomId) => {
     await sendMessage(roomId, `/roll`);
     await sleep(1000);
     let msgRes = await chatworkClient.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(`[info]🎡 [ディーラー] ルーレットを回しています... [ ?? ][/info]`)}`);
-    let mId = msgRes.data.message_id;
-    for(let i=0; i<4; i++) {
-        await sleep(1000);
-        await editMessage(roomId, mId, `[info]🎡 [ディーラー] ルーレットを回しています... [ ${Math.floor(Math.random()*37)} ][/info]`);
+    if (msgRes && msgRes.data) {
+        let mId = msgRes.data.message_id;
+        for(let i=0; i<12; i++) {
+            await sleep(400);
+            let tempN = Math.floor(Math.random()*37);
+            await editMessage(roomId, mId, `[info]🎡 [ディーラー] ルーレットを回しています...\nｶﾁｶﾁｶﾁ... [ ${tempN} ] (${getRouletteColorStr(tempN)})[/info]`);
+        }
+        let resultNum = Math.floor(Math.random() * 37);
+        await sleep(600);
+        await editMessage(roomId, mId, `[info]🎡 ルーレット確定: [ ${resultNum} ] (${getRouletteColorStr(resultNum)})[/info]`);
+        await sleep(2000);
+        await resolveRoulette(roomId, resultNum);
+    } else {
+        await resolveRoulette(roomId, Math.floor(Math.random() * 37));
     }
-    let resultNum = Math.floor(Math.random() * 37);
-    await sleep(1000);
-    await editMessage(roomId, mId, `[info]🎡 ルーレット確定: [ ${resultNum} ] (${getRouletteColorStr(resultNum)})[/info]`);
-    await sleep(2000);
-    await resolveRoulette(roomId, resultNum);
 };
 
 const proceedBotDerby = async (roomId) => {
     let msgRes = await chatworkClient.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(`[info]🐎 各馬、一斉にスタートしました！[/info]`)}`);
-    let mId = msgRes.data.message_id;
-    for(let i=0; i<4; i++) {
-        await sleep(1500);
-        let pos = [1,2,3,4,5,6].sort(() => Math.random() - 0.5);
-        await editMessage(roomId, mId, `[info]🐎 レース中盤... 現在の先頭は【 ${pos[0]} 】番！ 続いて【 ${pos[1]} 】番！[/info]`);
+    if (msgRes && msgRes.data) {
+        let mId = msgRes.data.message_id;
+        for(let i=0; i<6; i++) {
+            await sleep(800);
+            let pos = [1,2,3,4,5,6].sort(() => Math.random() - 0.5);
+            await editMessage(roomId, mId, `[info]🐎 レース中盤...\n現在の先頭は【 ${pos[0]} 】番！ 続いて【 ${pos[1]} 】番！ 追い上げる【 ${pos[2]} 】番！[/info]`);
+        }
+        await sleep(1000);
+        await resolveDerby(roomId, mId);
+    } else {
+        await resolveDerby(roomId);
     }
-    await sleep(2000);
-    await resolveDerby(roomId, mId);
 };
-
 
 // --- ゲーム結果精算 ---
 const resolveBJ = async (roomId) => {
@@ -1123,14 +1147,14 @@ app.post('/webhook', (req, res) => {
                 else if (g === 'derby') txt = `[title]🐎 ダービーのルール[/title]6頭の馬から、1位と2位になる馬の組み合わせ(馬連)を予想します。\nオッズに従って配当が変動します。( /bet 100 1-2 のように馬番を指定 )`;
                 else if (g === 'chouhan') txt = `[title]🎲 丁半のルール[/title]2つのサイコロの合計が「丁(偶数)」か「半(奇数)」かを予想します。\n的中すれば賭け金が2倍になります。`;
                 else if (g === 'sicbo') txt = `[title]🎲 シックボー(大小)のルール[/title]3つのサイコロを振ります。\n合計が11〜17なら「dai(大)」、4〜10なら「shou(小)」。ゾロ目なら「any」です。\n【配当】大・小 (1.8倍) / エニートリプル (15倍)`;
-                else if (g === 'roulette') txt = `[title]🎡 ルーレットのルール[/title]数字(0〜36)や属性にベットします。\n/bet 100 red (赤), black (黒), even (偶数), odd (奇数), high (19-36), low (1-18)\nまたは /bet 100 5 のように数字を指定できます。\n【配当】属性は 2倍。数字単体は 36倍。`;
+                else if (g === 'rolet') txt = `[title]🎡 ルーレットのルール[/title]数字(0〜36)や属性にベットします。\n/bet 100 red (赤), black (黒), even (偶数), odd (奇数), high (19-36), low (1-18)\nまたは /bet 100 5 のように数字を指定できます。\n【配当】属性は 2倍。数字単体は 36倍。`;
                 else txt = `指定されたゲームのルールは見つかりませんでした。`;
                 return sendTempMessage(roomId, `[info]${txt}[/info]`, 120000);
             }
 
             // --- 📖 ヘルプコマンド ---
             if (body.trim() === '/help-gya') {
-                const helpMsg = `[info][title]🎰 カジノ＆ライフ 総合案内 (V43 LiveAction)[/title]
+                const helpMsg = `[info][title]🎰 カジノ＆ライフ 総合案内 (V44 Action Update)[/title]
 【 🏦 銀行・ステータス 】
 /status : 状態確認
 /give [金額] : 相手に送金 (税金10%)
@@ -1151,7 +1175,7 @@ app.post('/webhook', (req, res) => {
 /chouhan : 丁半ゲーム募集
 /sicbo : シックボー募集 (/bet [額] [dai/shou/any])
 /cc : チンチロリン募集 (参加者は /roll)
-/roulette : ルーレット募集 (/bet [額] [red/even/数字など])
+/rolet : ルーレット募集 (/bet [額] [red/even/数字など])
 /derby : ダービー募集 (/bet [額] [馬番-馬番])
 /bj : ブラックジャック募集 (/hit か /stand)
 /poker : ポーカー募集 (/change [番号] か /stand)
@@ -1386,17 +1410,20 @@ app.post('/webhook', (req, res) => {
                     let wA = bet * ml; if (wA > 0) await addMoneyWithRepay(senderId, wA);
                     
                     let msgRes = await chatworkClient.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(`[info]🎰 SLOT MACHINE 回転中...\n[ ❓ | ❓ | ❓ ][/info]`)}`);
-                    let mId = msgRes.data.message_id;
-                    const syms = ["🍉","🍋","🔔","🍇","7️⃣","6️⃣","5️⃣","🍒","🐉"];
-                    for(let i=0; i<3; i++) {
-                        await sleep(1000);
-                        let t1=syms[Math.floor(Math.random()*syms.length)];
-                        let t2=syms[Math.floor(Math.random()*syms.length)];
-                        let t3=syms[Math.floor(Math.random()*syms.length)];
-                        await editMessage(roomId, mId, `[info]🎰 SLOT MACHINE 回転中...\n[ ${t1} | ${t2} | ${t3} ][/info]`);
+                    if (msgRes && msgRes.data) {
+                        let mId = msgRes.data.message_id;
+                        const syms = ["🍉","🍋","🔔","🍇","7️⃣","6️⃣","5️⃣","🍒","🐉"];
+                        for(let i=0; i<8; i++) {
+                            await sleep(400);
+                            let t1=syms[Math.floor(Math.random()*syms.length)];
+                            let t2=syms[Math.floor(Math.random()*syms.length)];
+                            let t3=syms[Math.floor(Math.random()*syms.length)];
+                            await editMessage(roomId, mId, `[info]🎰 SLOT MACHINE 回転中...\n[ ${t1} | ${t2} | ${t3} ][/info]`);
+                        }
+                        await editMessage(roomId, mId, `[info][title]🎰 SLOT MACHINE ${oM}[/title]${makeReplyTag(senderId, roomId, msgId)}\n[hr]　▶ [ ${sy} ] ◀　\n[hr]${res}\n\n賭け金: ${formatNumber(bet)} ➡ 獲得: ${formatNumber(wA)} コイン\n(残り回数: ${5 - (player.slot_count + 1)}回)[/info]`);
+                    } else {
+                        return sendMessage(roomId, `[info][title]🎰 SLOT MACHINE ${oM}[/title]${makeReplyTag(senderId, roomId, msgId)}\n[hr]　▶ [ ${sy} ] ◀　\n[hr]${res}\n\n賭け金: ${formatNumber(bet)} ➡ 獲得: ${formatNumber(wA)} コイン\n(残り回数: ${5 - (player.slot_count + 1)}回)[/info]`);
                     }
-                    
-                    await editMessage(roomId, mId, `[info][title]🎰 SLOT MACHINE ${oM}[/title]${makeReplyTag(senderId, roomId, msgId)}\n[hr]　▶ [ ${sy} ] ◀　\n[hr]${res}\n\n賭け金: ${formatNumber(bet)} ➡ 獲得: ${formatNumber(wA)} コイン\n(残り回数: ${5 - (player.slot_count + 1)}回)[/info]`);
                 } else return sendTempMessage(roomId, `[info]⚠️ ${makeReplyTag(senderId, roomId, msgId)} お金が足りません！[/info]`);
             }
 
@@ -1438,13 +1465,13 @@ app.post('/webhook', (req, res) => {
             }
 
             // --- 🎲 ゲーム共通 (募集・参加・開始・退出) ---
-            if (body.match(/(^|\n)\/(chouhan|cc|derby|bj|poker|yacht|sicbo|roulette)\b/) && gambleActive) {
+            if (body.match(/(^|\n)\/(chouhan|cc|derby|bj|poker|yacht|sicbo|rolet)\b/) && gambleActive) {
                 if (gameState[roomId]) return sendTempMessage(roomId, `[info][title]⚠️ エラー[/title]現在、別のゲームが進行中です。終了までお待ちください。[/info]`);
                 
-                let t = body.match(/(^|\n)\/(chouhan|cc|derby|bj|poker|yacht|sicbo|roulette)\b/)[2];
+                let t = body.match(/(^|\n)\/(chouhan|cc|derby|bj|poker|yacht|sicbo|rolet)\b/)[2];
                 gameState[roomId] = { type: t, state: 'RECRUITING', host: senderId, players: [{ aid: senderId, bet: 0 }] };
                 
-                let tN = t==='derby' ? "🐎 みんなでダービー" : (t==='cc' ? "🎲 チンチロリン" : (t==='bj' ? "🃏 ブラックジャック" : (t==='poker' ? "🃏 ポーカー" : (t==='yacht' ? "🎲 ヨット" : (t==='sicbo' ? "🎲 シックボー(大小)" : (t==='roulette' ? "🎡 ルーレット" : "🎲 丁半ゲーム")))))); 
+                let tN = t==='derby' ? "🐎 みんなでダービー" : (t==='cc' ? "🎲 チンチロリン" : (t==='bj' ? "🃏 ブラックジャック" : (t==='poker' ? "🃏 ポーカー" : (t==='yacht' ? "🎲 ヨット" : (t==='sicbo' ? "🎲 シックボー(大小)" : (t==='rolet' ? "🎡 ルーレット" : "🎲 丁半ゲーム")))))); 
                 let ex = `/join ${t}`;
                 
                 if (t === 'derby') {
@@ -1459,7 +1486,7 @@ app.post('/webhook', (req, res) => {
                 return;
             }
 
-            if (body.match(/(^|\n)\/join\s+(chouhan|cc|derby|bj|poker|yacht|sicbo|roulette)/) && gambleActive && gameState[roomId]?.state === 'RECRUITING') {
+            if (body.match(/(^|\n)\/join\s+(chouhan|cc|derby|bj|poker|yacht|sicbo|rolet)/) && gambleActive && gameState[roomId]?.state === 'RECRUITING') {
                 if (!gameState[roomId].players.find(x => x.aid === senderId)) { 
                     gameState[roomId].players.push({ aid: senderId, bet: 0 }); 
                     sendMessage(roomId, `[info]🙋‍♂️ [piconname:${senderId}] が参加しました！ (現在 ${gameState[roomId].players.length}人)[/info]`); 
@@ -1467,8 +1494,8 @@ app.post('/webhook', (req, res) => {
                 return;
             }
 
-            if (body.match(/(^|\n)\/start(chouhan|cc|derby|bj|poker|yacht|sicbo|roulette)/) && gambleActive && gameState[roomId]?.state === 'RECRUITING' && gameState[roomId].host === senderId) {
-                if (gameState[roomId].players.length < 2 && !['bj','poker','yacht','cc','sicbo','roulette'].includes(gameState[roomId].type)) return sendTempMessage(roomId, `[info]⚠️ 参加者が2人以上でないと開始できません。[/info]`);
+            if (body.match(/(^|\n)\/start(chouhan|cc|derby|bj|poker|yacht|sicbo|rolet)/) && gambleActive && gameState[roomId]?.state === 'RECRUITING' && gameState[roomId].host === senderId) {
+                if (gameState[roomId].players.length < 2 && !['bj','poker','yacht','cc','sicbo','rolet'].includes(gameState[roomId].type)) return sendTempMessage(roomId, `[info]⚠️ 参加者が2人以上でないと開始できません。[/info]`);
                 clearTimeout(gameState[roomId].timeoutId); 
                 handleGameTimeout(roomId); 
                 return;
@@ -1509,7 +1536,7 @@ app.post('/webhook', (req, res) => {
                             let h = bM[3]; 
                             if (!h || !['dai','shou','any'].includes(h)) return sendTempMessage(roomId, `[info]⚠️ 予想(dai/shou/any)を正しく指定してください\n例: /bet 100 dai[/info]`);
                             pl.choice = h;
-                        } else if (gameState[roomId].type === 'roulette') {
+                        } else if (gameState[roomId].type === 'rolet') {
                             let h = bM[3]; 
                             if (!h || (!['red','black','even','odd','high','low'].includes(h) && (isNaN(parseInt(h)) || parseInt(h) < 0 || parseInt(h) > 36))) return sendTempMessage(roomId, `[info]⚠️ 予想を正しく指定してください\n例: /bet 100 red[/info]`);
                             pl.choice = h;
@@ -1538,29 +1565,38 @@ app.post('/webhook', (req, res) => {
                     let pl = g.players.find(x => x.aid === senderId);
                     if (pl && !pl.res) {
                         let msgRes = await chatworkClient.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(`[info]🎲 [piconname:${senderId}] サイコロを振っています...[/info]`)}`);
-                        let mId = msgRes.data.message_id;
-                        for(let i=0; i<3; i++) {
-                            await sleep(1000);
-                            let tempD = [Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1];
-                            await editMessage(roomId, mId, `[info]🎲 [piconname:${senderId}] サイコロを振っています...\n[ ${tempD.join(', ')} ][/info]`);
+                        if (msgRes && msgRes.data) {
+                            let mId = msgRes.data.message_id;
+                            for(let i=0; i<8; i++) {
+                                await sleep(400);
+                                let tempD = [Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1];
+                                await editMessage(roomId, mId, `[info]🎲 [piconname:${senderId}] サイコロを振っています...\n[ ${tempD.join(', ')} ][/info]`);
+                            }
+                            pl.res = generateChinchiroRoll(); 
+                            await editMessage(roomId, mId, `[info]🎲 [piconname:${senderId}] の出目: [ ${pl.res.dice.join(', ')} ] ➡ 『 ${pl.res.name} 』[/info]`);
+                        } else {
+                            pl.res = generateChinchiroRoll();
                         }
-                        pl.res = generateChinchiroRoll(); 
-                        await editMessage(roomId, mId, `[info]🎲 [piconname:${senderId}] の出目: [ ${pl.res.dice.join(', ')} ] ➡ 『 ${pl.res.name} 』[/info]`);
                         checkGameProgress(roomId);
                     }
                 } else if (g.type === 'yacht') {
                     let pl = g.players[g.turnIndex];
                     if (pl && pl.aid === senderId && pl.status === 'playing' && pl.rolls === 0) {
                         let msgRes = await chatworkClient.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(`[info]🎲 [piconname:${pl.aid}] サイコロを振っています...[/info]`)}`);
-                        let mId = msgRes.data.message_id;
-                        for(let i=0; i<3; i++) {
-                            await sleep(1000);
-                            let tempD = Array.from({length:5}, ()=>Math.floor(Math.random()*6)+1);
-                            await editMessage(roomId, mId, `[info]🎲 [piconname:${pl.aid}] サイコロを振っています...\n[ ${tempD.map(d=>`🎲${d}`).join(' ')} ][/info]`);
+                        if (msgRes && msgRes.data) {
+                            let mId = msgRes.data.message_id;
+                            for(let i=0; i<8; i++) {
+                                await sleep(400);
+                                let tempD = Array.from({length:5}, ()=>Math.floor(Math.random()*6)+1);
+                                await editMessage(roomId, mId, `[info]🎲 [piconname:${pl.aid}] サイコロを振っています...\n[ ${tempD.map(d=>`🎲${d}`).join(' ')} ][/info]`);
+                            }
+                            pl.dice = Array.from({length:5}, ()=>Math.floor(Math.random()*6)+1);
+                            pl.rolls = 1;
+                            await editMessage(roomId, mId, `[info]🎲 [piconname:${pl.aid}] サイコロを振りました。\n[ ${pl.dice.map(d=>`🎲${d}`).join(' ')} ][/info]`);
+                        } else {
+                            pl.dice = Array.from({length:5}, ()=>Math.floor(Math.random()*6)+1);
+                            pl.rolls = 1;
                         }
-                        pl.dice = Array.from({length:5}, ()=>Math.floor(Math.random()*6)+1);
-                        pl.rolls = 1;
-                        await editMessage(roomId, mId, `[info]🎲 [piconname:${pl.aid}] サイコロを振りました。\n[ ${pl.dice.map(d=>`🎲${d}`).join(' ')} ][/info]`);
                         await sleep(1000);
                         await proceedNextYachtTurn(roomId);
                     }
@@ -1586,28 +1622,40 @@ app.post('/webhook', (req, res) => {
                             await proceedNextPokerTurn(roomId);
                         } else if (g.type === 'yacht') {
                             let cMsgRes = await chatworkClient.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(`[info]🎲 [piconname:${pl.aid}] サイコロを振り直しています...[/info]`)}`);
-                            let cmId = cMsgRes.data.message_id;
-                            for(let i=0; i<3; i++) {
-                                await sleep(1000);
-                                let tempD = [...pl.dice];
-                                nums.forEach(idx => tempD[idx-1] = Math.floor(Math.random()*6)+1);
-                                await editMessage(roomId, cmId, `[info]🎲 [piconname:${pl.aid}] サイコロを振り直しています...\n[ ${tempD.map(d=>`🎲${d}`).join(' ')} ][/info]`);
-                            }
-                            nums.forEach(idx => pl.dice[idx-1] = Math.floor(Math.random() * 6) + 1);
-                            pl.rolls++;
-                            
-                            if (pl.rolls >= 3) {
-                                pl.status = 'stand';
-                                let diceStr = pl.dice.map(d => `🎲${d}`).join(' ');
-                                let ev = getYachtRank(pl.dice);
-                                await editMessage(roomId, cmId, `[info][piconname:${pl.aid}] 3回目の振り直し完了！\n確定サイコロ: ${diceStr} (${ev.name})[/info]`);
-                                g.turnIndex++;
-                                await proceedNextYachtTurn(roomId);
+                            if (cMsgRes && cMsgRes.data) {
+                                let cmId = cMsgRes.data.message_id;
+                                for(let i=0; i<8; i++) {
+                                    await sleep(400);
+                                    let tempD = [...pl.dice];
+                                    nums.forEach(idx => tempD[idx-1] = Math.floor(Math.random()*6)+1);
+                                    await editMessage(roomId, cmId, `[info]🎲 [piconname:${pl.aid}] サイコロを振り直しています...\n[ ${tempD.map(d=>`🎲${d}`).join(' ')} ][/info]`);
+                                }
+                                nums.forEach(idx => pl.dice[idx-1] = Math.floor(Math.random() * 6) + 1);
+                                pl.rolls++;
+                                
+                                if (pl.rolls >= 3) {
+                                    pl.status = 'stand';
+                                    let diceStr = pl.dice.map(d => `🎲${d}`).join(' ');
+                                    let ev = getYachtRank(pl.dice);
+                                    await editMessage(roomId, cmId, `[info][piconname:${pl.aid}] 3回目の振り直し完了！\n確定サイコロ: ${diceStr} (${ev.name})[/info]`);
+                                    g.turnIndex++;
+                                    await proceedNextYachtTurn(roomId);
+                                } else {
+                                    let diceStr = pl.dice.map((d, i) => `[${i+1}] 🎲${d}`).join('   ');
+                                    let ev = getYachtRank(pl.dice);
+                                    await editMessage(roomId, cmId, `[info][title]🎲 ヨット ターン継続 ( ${pl.rolls}/3 回目 )[/title][piconname:${pl.aid}]\nサイコロ: ${diceStr} (${ev.name})\n\n/change [番号] または /stand[/info]`);
+                                    startGameTimer(roomId, 60000);
+                                }
                             } else {
-                                let diceStr = pl.dice.map((d, i) => `[${i+1}] 🎲${d}`).join('   ');
-                                let ev = getYachtRank(pl.dice);
-                                await editMessage(roomId, cmId, `[info][title]🎲 ヨット ターン継続 ( ${pl.rolls}/3 回目 )[/title][piconname:${pl.aid}]\nサイコロ: ${diceStr} (${ev.name})\n\n/change [番号] または /stand[/info]`);
-                                startGameTimer(roomId, 60000);
+                                nums.forEach(idx => pl.dice[idx-1] = Math.floor(Math.random() * 6) + 1);
+                                pl.rolls++;
+                                if (pl.rolls >= 3) {
+                                    pl.status = 'stand';
+                                    g.turnIndex++;
+                                    await proceedNextYachtTurn(roomId);
+                                } else {
+                                    startGameTimer(roomId, 60000);
+                                }
                             }
                         }
                     } else {
