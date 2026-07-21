@@ -170,12 +170,11 @@ const evaluateYacht = (dice) => {
     let uniqueDice = [...new Set(dice)].sort((a, b) => a - b);
     let strStr = uniqueDice.join('');
     
-    if (values[0] === 5) return { name: "ヨット (5カード)", mult: 50 };
-    if (strStr.includes('12345') || strStr.includes('23456')) return { name: "ビッグストレート", mult: 15 };
-    if (values[0] === 4) return { name: "フォーダイス", mult: 5 };
-    if (values[0] === 3 && values[1] === 2) return { name: "フルハウス", mult: 3 };
-    if (strStr.includes('1234') || strStr.includes('2345') || strStr.includes('3456')) return { name: "スモールストレート", mult: 2 };
-    if (values[0] === 3) return { name: "スリーダイス", mult: 1 };
+    if (values[0] === 5) return { name: "ヨット (5カード)", mult: 25 };
+    if (strStr.includes('12345') || strStr.includes('23456')) return { name: "ビッグストレート", mult: 8 };
+    if (values[0] === 4) return { name: "フォーダイス", mult: 4 };
+    if (values[0] === 3 && values[1] === 2) return { name: "フルハウス", mult: 2 };
+    if (strStr.includes('1234') || strStr.includes('2345') || strStr.includes('3456')) return { name: "スモールストレート", mult: 1 };
     
     return { name: "役なし", mult: 0 };
 };
@@ -237,7 +236,6 @@ const evaluatePokerHand = (hand) => {
             break;
         }
     }
-    // A-5-4-3-2 のストレート特別対応
     if (!isStraight && values[0] === 14 && values[1] === 5 && values[2] === 4 && values[3] === 3 && values[4] === 2) {
         isStraight = true;
     }
@@ -254,14 +252,11 @@ const evaluatePokerHand = (hand) => {
     if (isStraight) return { name: "ストレート", mult: 5 };
     if (counts[0] === 3) return { name: "スリーカード", mult: 3 };
     if (counts[0] === 2 && counts[1] === 2) return { name: "ツーペア", mult: 2 };
-    
-    // ジャックスオアベター判定
     if (counts[0] === 2) {
         const pairRank = parseInt(Object.keys(rankCounts).find(key => rankCounts[key] === 2));
         if (pairRank >= 11 || pairRank === 14) return { name: "ワンペア (J以上)", mult: 1 };
         return { name: "ワンペア", mult: 0 };
     }
-
     return { name: "ノーペア", mult: 0 };
 };
 
@@ -289,7 +284,7 @@ const handleGameTimeout = async (roomId) => {
     if (!game || game.state === 'IDLE') return;
 
     if (game.state === 'RECRUITING') {
-        let isEnoughPlayers = (game.type === 'bj' || game.type === 'poker' || game.type === 'yacht') ? (game.players.length >= 1) : (game.players.length >= 2);
+        let isEnoughPlayers = ['bj', 'poker', 'yacht', 'cc', 'sicbo'].includes(game.type) ? (game.players.length >= 1) : (game.players.length >= 2);
         
         if (isEnoughPlayers) {
             game.state = 'BETTING';
@@ -297,6 +292,10 @@ const handleGameTimeout = async (roomId) => {
                 let ex = `\n【 🐎 馬連オッズ 】\n${game.oddsStr}\n[hr]👉 [code]/bet [額] [馬1]-[馬2][/code] (例: /bet 100 1-2)`;
                 await sendTempMessage(roomId, `[info][title]⏳ 募集終了・ゲーム開始[/title]参加者が確定しました。${ex}\n[hr](※制限2分。残り1分でリマインドします)[/info]`, 120000);
                 startGameTimer(roomId, 120000, true);
+            } else if (game.type === 'sicbo') {
+                let ex = `👉 [code]/bet [額] dai/shou/any[/code] でベットしてください。`;
+                await sendTempMessage(roomId, `[info][title]⏳ 募集終了・ゲーム開始[/title]参加者が確定しました。\n\n${ex}\n[hr](※制限1分。 /bet max や /bet half も使えます)[/info]`);
+                startGameTimer(roomId, 60000);
             } else {
                 let ex = `👉 [code]/bet [額][/code] でベットしてください。`;
                 await sendTempMessage(roomId, `[info][title]⏳ 募集終了・ゲーム開始[/title]参加者が確定しました。\n\n${ex}\n[hr](※制限1分。 /bet max や /bet half も使えます)[/info]`);
@@ -321,7 +320,7 @@ const handleGameTimeout = async (roomId) => {
             await sendTempMessage(roomId, `[info][title]⏳ タイムアウト[/title]時間切れのため、未ベットのプレイヤーを退出させました。\n${kickedAids.map(a => `[piconname:${a}]`).join(' ')}[/info]`);
         }
         
-        let isEnoughPlayers = (game.type === 'bj' || game.type === 'poker' || game.type === 'yacht') ? (game.players.length >= 1) : (game.players.length >= 2);
+        let isEnoughPlayers = ['bj', 'poker', 'yacht', 'cc', 'sicbo'].includes(game.type) ? (game.players.length >= 1) : (game.players.length >= 2);
         
         if (!isEnoughPlayers) {
             for (let player of game.players) {
@@ -348,7 +347,7 @@ const handleGameTimeout = async (roomId) => {
             for (let player of game.players) {
                 let isKicked = false;
                 if (game.type === 'chouhan' && !player.choice) isKicked = true;
-                if (game.type === 'cc' && !player.res && player.aid !== game.host) isKicked = true;
+                if (game.type === 'cc' && !player.res) isKicked = true; // ボット親なので全員対象
                 
                 if (isKicked) {
                     kickedAids.push(player.aid);
@@ -363,11 +362,12 @@ const handleGameTimeout = async (roomId) => {
                 await sendTempMessage(roomId, `[info][title]⏳ タイムアウト[/title]時間切れのため未操作のプレイヤーを退出・返金しました。\n${kickedAids.map(a => `[piconname:${a}]`).join(' ')}[/info]`);
             }
             
-            if (game.players.length < 2) {
+            let isEnoughPlayers = ['cc'].includes(game.type) ? (game.players.length >= 1) : (game.players.length >= 2);
+            if (!isEnoughPlayers) {
                 for (let player of game.players) {
                     if (player.bet > 0) await addMoneyWithRepay(player.aid, player.bet);
                 }
-                await sendTempMessage(roomId, `[info][title]⚠️ ゲーム中止[/title]残りの参加者が2人未満になったため中止・返金しました。[/info]`);
+                await sendTempMessage(roomId, `[info][title]⚠️ ゲーム中止[/title]残りの参加者が規定人数未満になったため中止・返金しました。[/info]`);
                 gameState[roomId] = null;
             } else {
                 if (game.type === 'chouhan') await resolveChouhan(roomId);
@@ -385,6 +385,9 @@ const checkGameProgress = async (roomId) => {
         if (game.type === 'derby') {
             clearTimeout(game.timeoutId); if (game.remindId) clearTimeout(game.remindId);
             await resolveDerby(roomId);
+        } else if (game.type === 'sicbo') {
+            clearTimeout(game.timeoutId);
+            await resolveSicbo(roomId);
         } else if (game.type === 'bj') {
             game.state = 'ACTION';
             game.deck = generateDeck();
@@ -432,13 +435,13 @@ const checkGameProgress = async (roomId) => {
             await proceedNextYachtTurn(roomId);
         } else {
             game.state = 'ACTION';
-            let txt = game.type === 'chouhan' ? "丁半を予想し、 [code]/chou[/code] (丁) または [code]/han[/code] (半) と発言してください。" : "親以外は [code]/roll[/code] でサイコロを振ってください。";
+            let txt = game.type === 'chouhan' ? "丁半を予想し、 [code]/chou[/code] (丁) または [code]/han[/code] (半) と発言してください。" : "各プレイヤーは [code]/roll[/code] でサイコロを振ってください。";
             await sendTempMessage(roomId, `[info][title]🎲 ゲーム進行[/title]全員のベットが完了しました！\n${txt}\n[hr](※制限時間: 1分)[/info]`);
             startGameTimer(roomId, 60000);
         }
     } else if (game.state === 'ACTION') {
         if (game.type === 'chouhan' && game.players.every(p => p.choice)) await resolveChouhan(roomId);
-        if (game.type === 'cc' && game.players.filter(x => x.aid !== game.host).every(p => p.res)) await resolveChinchiro(roomId);
+        if (game.type === 'cc' && game.players.every(p => p.res)) await resolveChinchiro(roomId);
     }
 };
 
@@ -619,10 +622,9 @@ const resolveChinchiro = async (roomId) => {
     clearTimeout(game.timeoutId);
     
     let parentRoll = generateChinchiroRoll(); 
-    let msg = `[info][title]🎲 チンチロリン 結果発表[/title]【 親 ([piconname:${game.host}]) の出目 】\n[ ${parentRoll.dice.join(', ')} ] ➡ 『 ${parentRoll.name} 』\n[hr]【 プレイヤー結果 】\n`;
+    let msg = `[info][title]🎲 チンチロリン 結果発表[/title]【 ディーラー(親) の出目 】\n[ ${parentRoll.dice.join(', ')} ] ➡ 『 ${parentRoll.name} 』\n[hr]【 プレイヤー結果 】\n`;
     
     for (let player of game.players) {
-        if (player.aid === game.host) continue;
         let r = player.res || { rank: 1, name: "欠席", mult: 1, score: 0, dice: [0,0,0] };
         let win = (r.rank > parentRoll.rank) || (r.rank === parentRoll.rank && r.score > parentRoll.score);
         let draw = (r.rank === parentRoll.rank && r.score === parentRoll.score);
@@ -632,8 +634,9 @@ const resolveChinchiro = async (roomId) => {
             msg += `😐 [piconname:${player.aid}]: [${r.dice.join('')}] ${r.name} ➡ 引き分け (返金)\n`; 
         } else if (win) { 
             let mult = r.mult > 0 ? r.mult : 1; 
-            await addMoneyWithRepay(player.aid, player.bet + (player.bet * mult)); 
-            msg += `(cracker) [piconname:${player.aid}]: [${r.dice.join('')}] ${r.name} ➡ 勝ち！ (+${formatNumber(player.bet * mult)})\n`; 
+            let winAmt = player.bet * mult;
+            await addMoneyWithRepay(player.aid, player.bet + winAmt); 
+            msg += `(cracker) [piconname:${player.aid}]: [${r.dice.join('')}] ${r.name} ➡ 勝ち！ (+${formatNumber(winAmt)})\n`; 
         } else { 
             msg += `💀 [piconname:${player.aid}]: [${r.dice.join('')}] ${r.name} ➡ 負け...\n`; 
         }
@@ -700,6 +703,41 @@ const resolveDerby = async (roomId) => {
     gameState[roomId] = null; 
 };
 
+const resolveSicbo = async (roomId) => {
+    let game = gameState[roomId]; 
+    if (!game) return; 
+    clearTimeout(game.timeoutId);
+    
+    let d1 = Math.floor(Math.random() * 6) + 1;
+    let d2 = Math.floor(Math.random() * 6) + 1;
+    let d3 = Math.floor(Math.random() * 6) + 1;
+    let sum = d1 + d2 + d3;
+    let isTriple = d1 === d2 && d2 === d3;
+    
+    let resultType = isTriple ? "any" : (sum >= 11 && sum <= 17 ? "dai" : "shou");
+    let resultName = isTriple ? "ゾロ目" : (resultType === "dai" ? "大" : "小");
+    
+    let msg = `[info][title]🎲 シックボー(大小) 結果発表[/title]出目: ${d1}, ${d2}, ${d3} (合計:${sum})\n➡ 『 ${resultName} 』\n[hr]【 プレイヤー結果 】\n`;
+    
+    for (let player of game.players) {
+        if (player.choice === 'any' && isTriple) {
+            let winAmt = Math.floor(player.bet * 15);
+            await addMoneyWithRepay(player.aid, player.bet + winAmt);
+            msg += `(cracker) [piconname:${player.aid}]: 予想[ゾロ目] ➡ 的中！ (15倍) (+${formatNumber(winAmt)})\n`;
+        } else if ((player.choice === 'dai' || player.choice === 'shou') && player.choice === resultType && !isTriple) {
+            let winAmt = Math.floor(player.bet * 1.8);
+            await addMoneyWithRepay(player.aid, player.bet + winAmt);
+            msg += `(cracker) [piconname:${player.aid}]: 予想[${player.choice === 'dai' ? '大' : '小'}] ➡ 的中！ (1.8倍) (+${formatNumber(winAmt)})\n`;
+        } else {
+            let choiceName = player.choice === 'any' ? "ゾロ目" : (player.choice === 'dai' ? "大" : "小");
+            msg += `💀 [piconname:${player.aid}]: 予想[${choiceName}] ➡ はずれ...\n`;
+        }
+    }
+    await sendMessage(roomId, msg + "[/info]"); 
+    gameState[roomId] = null; 
+};
+
+
 // --- Webhook メイン処理 ---
 app.post('/webhook', (req, res) => {
     if (!verifySignature(req)) return res.status(401).send('Invalid Signature');
@@ -754,13 +792,13 @@ app.post('/webhook', (req, res) => {
                         let payouts = {}; let winners = [];
                         
                         const checkPrize = (n, w) => {
-                            if (n === w) return { p: 30000, name: '🥇 1等' };
+                            if (n === w) return { p: 100000, name: '🥇 1等' };
                             let prev = w - 1 < 1 ? 9999 : w - 1; 
                             let next = w + 1 > 9999 ? 1 : w + 1;
-                            if (n === prev || n === next) return { p: 15000, name: '🥈 前後賞' };
-                            if (n % 1000 === w % 1000) return { p: 10000, name: '🥈 2等' }; 
-                            if (n % 100 === w % 100) return { p: 5000, name: '🥉 3等' };    
-                            if (n % 10 === w % 10) return { p: 1000, name: '🏅 4等' };      
+                            if (n === prev || n === next) return { p: 25000, name: '🥈 前後賞' };
+                            if (n % 1000 === w % 1000) return { p: 5000, name: '🥈 2等' }; 
+                            if (n % 100 === w % 100) return { p: 1000, name: '🥉 3等' };    
+                            if (n % 10 === w % 10) return { p: 500, name: '🏅 4等' };      
                             return null;
                         };
                         
@@ -804,7 +842,7 @@ app.post('/webhook', (req, res) => {
 
             // --- 📖 ヘルプコマンド ---
             if (body.trim() === '/help-gya') {
-                const helpMsg = `[info][title]🎰 カジノ＆ライフ 総合案内 (V40 Yahtzee)[/title]
+                const helpMsg = `[info][title]🎰 カジノ＆ライフ 総合案内 (V41 SicBo)[/title]
 【 🏦 銀行・ステータス 】
 ・ [code]/status[/code] : 状態確認
 ・ [code]/give [金額][/code] : 相手に送金 (税金10%)
@@ -819,21 +857,19 @@ app.post('/webhook', (req, res) => {
 
 【 🎰 カジノ・宝くじ 】
 ・ [code]/slot [掛金|max|half][/code] : スロット (1日5回)
-・ [code]/buy-lot [連番|バラ] [枚数][/code] : 宝くじ
+・ [code]/buy-lot [連番|バラ] [枚数][/code] : 宝くじ (最大1000枚)
 
 【 🎲 テーブルゲーム 】
 ・ [code]/chouhan[/code] : 丁半ゲーム募集
-・ [code]/cc[/code] : チンチロリン募集 ([code]/roll[/code] でサイコロ)
+・ [code]/sicbo[/code] : シックボー募集 ([code]/bet [額] [dai/shou/any][/code])
+・ [code]/cc[/code] : チンチロリン募集 (参加者は [code]/roll[/code] でサイコロ)
 ・ [code]/derby[/code] : ダービー募集 ([code]/bet [額] [馬番-馬番][/code])
 ・ [code]/bj[/code] : ブラックジャック募集 ([code]/hit[/code] か [code]/stand[/code])
 ・ [code]/poker[/code] : ポーカー募集 ([code]/change [番号][/code] か [code]/stand[/code])
 ・ [code]/yacht[/code] : ヨット募集 ([code]/change [番号][/code] か [code]/stand[/code])
 
 【 👑 管理者専用 】
-・ [code]/take [金][/code] : 特別資金付与
-・ [code]/fi-game[/code] : 進行中のゲームを強制終了・返金
-・ [code]/st-gya[/code], [code]/fi-gya[/code] : 有効/無効化
-・ [code]/blacklist[/code], [code]/remove-rank[/code] 等[/info]`;
+・ [code]/take [金][/code], [code]/fi-game[/code], [code]/st-gya[/code], [code]/fi-gya[/code], [code]/blacklist[/code] 等[/info]`;
                 return sendTempMessage(roomId, helpMsg, 120000);
             }
 
@@ -1068,7 +1104,7 @@ app.post('/webhook', (req, res) => {
             const lM = body.match(/(^|\n)\/buy-lot\s+(連番|バラ|)\s*([0-9]+)?/);
             if (lM && gambleActive) {
                 let md = lM[2] || 'バラ', cnt = lM[3] ? parseInt(lM[3], 10) : 1;
-                if (cnt > 0 && cnt <= 100) {
+                if (cnt > 0 && cnt <= 1000) {
                     let cost = cnt * 100; 
                     if (myMoney < cost) return sendTempMessage(roomId, `[info]⚠️ お金が足りません！(${cnt}枚 = ${formatNumber(cost)} コイン)[/info]`);
                     
@@ -1102,13 +1138,13 @@ app.post('/webhook', (req, res) => {
             }
 
             // --- 🎲 ゲーム共通 (募集・参加・開始・退出) ---
-            if (body.match(/(^|\n)\/(chouhan|cc|derby|bj|poker|yacht)\b/) && gambleActive) {
+            if (body.match(/(^|\n)\/(chouhan|cc|derby|bj|poker|yacht|sicbo)\b/) && gambleActive) {
                 if (gameState[roomId]) return sendTempMessage(roomId, `[info][title]⚠️ エラー[/title]現在、別のゲームが進行中です。終了までお待ちください。[/info]`);
                 
-                let t = body.match(/(^|\n)\/(chouhan|cc|derby|bj|poker|yacht)\b/)[2];
+                let t = body.match(/(^|\n)\/(chouhan|cc|derby|bj|poker|yacht|sicbo)\b/)[2];
                 gameState[roomId] = { type: t, state: 'RECRUITING', host: senderId, players: [{ aid: senderId, bet: 0 }] };
                 
-                let tN = t==='derby' ? "🐎 みんなでダービー" : (t==='cc' ? "🎲 チンチロリン" : (t==='bj' ? "🃏 ブラックジャック" : (t==='poker' ? "🃏 ポーカー" : (t==='yacht' ? "🎲 ヨット" : "🎲 丁半ゲーム")))); 
+                let tN = t==='derby' ? "🐎 みんなでダービー" : (t==='cc' ? "🎲 チンチロリン" : (t==='bj' ? "🃏 ブラックジャック" : (t==='poker' ? "🃏 ポーカー" : (t==='yacht' ? "🎲 ヨット" : (t==='sicbo' ? "🎲 シックボー(大小)" : "🎲 丁半ゲーム"))))); 
                 let ex = `[code]/join ${t}[/code]`;
                 
                 if (t === 'derby') {
@@ -1123,7 +1159,7 @@ app.post('/webhook', (req, res) => {
                 return;
             }
 
-            if (body.match(/(^|\n)\/join\s+(chouhan|cc|derby|bj|poker|yacht)/) && gambleActive && gameState[roomId]?.state === 'RECRUITING') {
+            if (body.match(/(^|\n)\/join\s+(chouhan|cc|derby|bj|poker|yacht|sicbo)/) && gambleActive && gameState[roomId]?.state === 'RECRUITING') {
                 if (!gameState[roomId].players.find(x => x.aid === senderId)) { 
                     gameState[roomId].players.push({ aid: senderId, bet: 0 }); 
                     sendMessage(roomId, `[info]🙋‍♂️ [piconname:${senderId}] が参加しました！ (現在 ${gameState[roomId].players.length}人)[/info]`); 
@@ -1131,8 +1167,8 @@ app.post('/webhook', (req, res) => {
                 return;
             }
 
-            if (body.match(/(^|\n)\/start(chouhan|cc|derby|bj|poker|yacht)/) && gambleActive && gameState[roomId]?.state === 'RECRUITING' && gameState[roomId].host === senderId) {
-                if (gameState[roomId].players.length < 2 && gameState[roomId].type !== 'bj' && gameState[roomId].type !== 'poker' && gameState[roomId].type !== 'yacht') return sendTempMessage(roomId, `[info]⚠️ 参加者が2人以上でないと開始できません。[/info]`);
+            if (body.match(/(^|\n)\/start(chouhan|cc|derby|bj|poker|yacht|sicbo)/) && gambleActive && gameState[roomId]?.state === 'RECRUITING' && gameState[roomId].host === senderId) {
+                if (gameState[roomId].players.length < 2 && !['bj','poker','yacht','cc','sicbo'].includes(gameState[roomId].type)) return sendTempMessage(roomId, `[info]⚠️ 参加者が2人以上でないと開始できません。[/info]`);
                 clearTimeout(gameState[roomId].timeoutId); 
                 handleGameTimeout(roomId); 
                 return;
@@ -1158,7 +1194,7 @@ app.post('/webhook', (req, res) => {
             }
 
             // --- 🎲 ゲーム (ベット・アクション) ---
-            const bM = body.match(/(^|\n)\/bet\s+(max|half|[0-9]+)(?:\s+([0-9]+-[0-9]+))?/);
+            const bM = body.match(/(^|\n)\/bet\s+(max|half|[0-9]+)(?:\s+([a-zA-Z0-9-]+))?/);
             if (bM && gambleActive && gameState[roomId]?.state === 'BETTING') {
                 let pl = gameState[roomId].players.find(x => x.aid === senderId);
                 if (pl && pl.bet === 0) {
@@ -1167,6 +1203,10 @@ app.post('/webhook', (req, res) => {
                         if (gameState[roomId].type === 'derby') {
                             let h = bM[3]; 
                             if (!h || !gameState[roomId].oddsMap[h]) return sendTempMessage(roomId, `[info]⚠️ 馬連(例: 1-2)を正しく指定してください\n例: [code]/bet 100 1-2[/code][/info]`);
+                            pl.choice = h;
+                        } else if (gameState[roomId].type === 'sicbo') {
+                            let h = bM[3]; 
+                            if (!h || !['dai','shou','any'].includes(h)) return sendTempMessage(roomId, `[info]⚠️ 予想(dai/shou/any)を正しく指定してください\n例: [code]/bet 100 dai[/code][/info]`);
                             pl.choice = h;
                         }
                         pl.bet = b; 
@@ -1189,7 +1229,7 @@ app.post('/webhook', (req, res) => {
 
             if (body.trim() === '/roll' && gambleActive && gameState[roomId]?.type === 'cc' && gameState[roomId].state === 'ACTION') {
                 let pl = gameState[roomId].players.find(x => x.aid === senderId);
-                if (pl && !pl.res && senderId !== gameState[roomId].host) {
+                if (pl && !pl.res) {
                     pl.res = generateChinchiroRoll(); 
                     sendMessage(roomId, `[info]🎲 [piconname:${senderId}] の出目: ${pl.res.name}[/info]`); 
                     checkGameProgress(roomId);
