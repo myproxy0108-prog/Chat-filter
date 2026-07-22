@@ -590,8 +590,6 @@ const proceedNextPokerTurn = async (roomId) => {
     await proceedBotPokerTurn(roomId);
 };
 
-2️⃣ 後半のコード
-
 const proceedBotPokerTurn = async (roomId) => {
     let game = gameState[roomId];
     if (!game) return;
