@@ -59,12 +59,27 @@ const editMessage = async (roomId, messageId, text) => {
     } catch(e) {}
 };
 
-// --- お金管理 ---
+// --- お金・借金管理 (自動返済・複利計算対応) ---
 const addMoneyWithRepay = async (accountId, amount) => {
-    const { data: player } = await supabase.from('players').select('*').eq('account_id', accountId).single();
-    let money = player ? player.money : 0;
-    let debt = player ? (player.debt || 0) : 0;
+    const { data: p } = await supabase.from('players').select('*').eq('account_id', accountId).single();
+    let money = p ? (p.money || 0) : 0;
+    let debt = p ? (p.debt || 0) : 0;
+    let bank = p ? (p.bank || 0) : 0;
+    let lastTime = p && p.last_interest_time ? Number(p.last_interest_time) : Date.now();
+    let now = Date.now();
 
+    // 利息計算 (1時間ごとに0.5%複利)
+    if (debt > 0) {
+        let hoursPassed = Math.floor((now - lastTime) / 3600000);
+        if (hoursPassed > 0) {
+            debt = Math.min(Math.floor(debt * Math.pow(1.005, hoursPassed)), 9999000);
+            lastTime = lastTime + (hoursPassed * 3600000);
+        }
+    } else {
+        lastTime = now;
+    }
+
+    // 自動返済
     if (debt > 0 && amount > 0) {
         let repayAmount = Math.min(debt, amount);
         debt -= repayAmount;
@@ -72,10 +87,10 @@ const addMoneyWithRepay = async (accountId, amount) => {
     }
     money += amount;
 
-    if (player) {
-        await supabase.from('players').update({ money: money, debt: debt }).eq('account_id', accountId);
+    if (p) {
+        await supabase.from('players').update({ money: money, debt: debt, last_interest_time: lastTime }).eq('account_id', accountId);
     } else {
-        await supabase.from('players').insert({ account_id: accountId, money: money, debt: debt, slot_count: 0, work_limit: 5, msg_count: 0, job: 'サラリーマン' });
+        await supabase.from('players').insert({ account_id: accountId, money: money, bank: bank, debt: debt, last_interest_time: lastTime, slot_count: 0, work_limit: 5, msg_count: 0, job: 'サラリーマン' });
     }
 };
 
@@ -1120,7 +1135,7 @@ app.post('/webhook', (req, res) => {
             let { data: player } = await supabase.from('players').select('*').eq('account_id', senderId).single();
             
             if (!player) {
-                player = { account_id: senderId, money: 0, debt: 0, slot_count: 0, work_limit: 5, msg_count: 1, job: 'サラリーマン' };
+                player = { account_id: senderId, money: 0, debt: 0, bank: 0, last_interest_time: Date.now(), slot_count: 0, work_limit: 5, msg_count: 1, job: 'サラリーマン' };
                 await supabase.from('players').insert(player);
             } else if (gambleActive && !body.startsWith('/')) {
                 let mc = (player.msg_count || 0) + 1; 
@@ -1130,10 +1145,28 @@ app.post('/webhook', (req, res) => {
                 await supabase.from('players').update({ msg_count: mc, work_limit: wl }).eq('account_id', senderId);
             }
 
+            // 利息計算 (WebHook単位で更新処理)
+            let now = Date.now();
+            let lastTime = player.last_interest_time ? Number(player.last_interest_time) : now;
+            let myDebt = player.debt || 0;
+            let myBank = player.bank || 0;
+
+            if (myDebt > 0) {
+                let hoursPassed = Math.floor((now - lastTime) / 3600000);
+                if (hoursPassed > 0) {
+                    myDebt = Math.min(Math.floor(myDebt * Math.pow(1.005, hoursPassed)), 9999000);
+                    lastTime = lastTime + (hoursPassed * 3600000);
+                    player.debt = myDebt;
+                    player.last_interest_time = lastTime;
+                    await supabase.from('players').update({ debt: myDebt, last_interest_time: lastTime }).eq('account_id', senderId);
+                }
+            } else if (lastTime !== now) {
+                player.last_interest_time = now;
+                await supabase.from('players').update({ last_interest_time: now }).eq('account_id', senderId);
+            }
+
             let myMoney = player ? player.money : 0;
-            let myDebt = player ? (player.debt || 0) : 0;
             let myJob = player ? (player.job || 'サラリーマン') : 'サラリーマン';
-            let currentMonthlyDebt = (player && player.debt_month === thisMonth) ? (player.monthly_debt || 0) : 0;
 
             // --- 📖 個別ルールコマンド ---
             const helpMatch = body.trim().match(/^\/help\s+([a-zA-Z]+)$/);
@@ -1154,12 +1187,15 @@ app.post('/webhook', (req, res) => {
 
             // --- 📖 ヘルプコマンド ---
             if (body.trim() === '/help-gya') {
-                const helpMsg = `[info][title]🎰 カジノ＆ライフ 総合案内 (V44 Action Update)[/title]
-【 🏦 銀行・ステータス 】
-/status : 状態確認
-/give [金額] : 相手に送金 (税金10%)
-/debt [金額] : 借金 (月上限5000)
-/money-rank : 純資産ランキング
+                const helpMsg = `[info][title]🎰 カジノ＆ライフ 総合案内 (V45 Banking & LiveAction)[/title]
+【 🏦 銀行・借金 】
+/status : 状態確認(所持金, 預金, 借金, 純資産など)
+/deposit [金額|max|half] : 所持金を銀行へ預け入れる
+/withdraw [金額|max|half] : 銀行から引き出す (※借金がある場合は自動的に返済に充てられます)
+/debt [金額] : 借金する (上限999万。1時間ごとに0.5%の複利で増殖！)
+/repay [金額|max|half] : 手動で借金を返済する
+/give [金額] : 相手に送金 (税金10%, 純資産の範囲内)
+/money-rank : 純資産(所持金+預金-借金)ランキング
 
 【 💼 職業・スキル 】
 /job : 転職と求人
@@ -1268,15 +1304,45 @@ app.post('/webhook', (req, res) => {
                 return sendMessage(roomId, `[info][title]⛩️ おみくじ結果[/title]${makeReplyTag(senderId, roomId, msgId)}\n[hr]今日の運勢は...【 ${res} 】です！\n\n${eff}[/info]`);
             }
 
-            // --- 🏦 銀行関連 (借金・送金) ---
+            // --- 🏦 銀行関連 (預金・引出・借金・返済・送金) ---
+            const depMatch = body.match(/(^|\n)\/deposit\s+(max|half|[0-9]+)/);
+            if (depMatch && gambleActive) {
+                let amt = depMatch[2] === 'max' ? myMoney : (depMatch[2] === 'half' ? Math.floor(myMoney/2) : parseInt(depMatch[2], 10));
+                if (amt > 0 && myMoney >= amt) {
+                    await supabase.from('players').update({ money: myMoney - amt, bank: myBank + amt }).eq('account_id', senderId);
+                    return sendTempMessage(roomId, `[info]🏦 [piconname:${senderId}]\n${formatNumber(amt)} コインを銀行に預け入れました。\n預金残高: ${formatNumber(myBank + amt)} コイン[/info]`);
+                } else return sendTempMessage(roomId, `[info]⚠️ 手持ちの所持金が足りません。[/info]`);
+            }
+
+            const witMatch = body.match(/(^|\n)\/withdraw\s+(max|half|[0-9]+)/);
+            if (witMatch && gambleActive) {
+                let amt = witMatch[2] === 'max' ? myBank : (witMatch[2] === 'half' ? Math.floor(myBank/2) : parseInt(witMatch[2], 10));
+                if (amt > 0 && myBank >= amt) {
+                    await supabase.from('players').update({ bank: myBank - amt }).eq('account_id', senderId);
+                    await addMoneyWithRepay(senderId, amt);
+                    return sendTempMessage(roomId, `[info]🏦 [piconname:${senderId}]\n銀行から ${formatNumber(amt)} コインを引き出しました。\n(※借金がある場合は自動返済に充当されます)[/info]`);
+                } else return sendTempMessage(roomId, `[info]⚠️ 預金残高が足りません。[/info]`);
+            }
+
+            const repMatch = body.match(/(^|\n)\/repay\s+(max|half|[0-9]+)/);
+            if (repMatch && gambleActive) {
+                if (myDebt <= 0) return sendTempMessage(roomId, `[info]返済する借金がありません。[/info]`);
+                let amt = repMatch[2] === 'max' ? myMoney : (repMatch[2] === 'half' ? Math.floor(myMoney/2) : parseInt(repMatch[2], 10));
+                amt = Math.min(amt, myDebt);
+                if (amt > 0 && myMoney >= amt) {
+                    await supabase.from('players').update({ money: myMoney - amt, debt: myDebt - amt }).eq('account_id', senderId);
+                    return sendTempMessage(roomId, `[info]💳 [piconname:${senderId}]\n借金を ${formatNumber(amt)} コイン手動返済しました！\n残りの借金: ${formatNumber(myDebt - amt)} コイン[/info]`);
+                } else return sendTempMessage(roomId, `[info]⚠️ 手持ちの所持金が足りません。[/info]`);
+            }
+
             const debtMatch = body.match(/(^|\n)\/debt\s+([0-9]+)/);
             if (debtMatch && gambleActive) {
                 let amt = parseInt(debtMatch[2], 10);
                 if (amt > 0) {
-                    if (currentMonthlyDebt + amt > 5000) return sendTempMessage(roomId, `[info][title]⚠️ 借金上限エラー[/title]${makeReplyTag(senderId, roomId, msgId)}\n1ヶ月の借金上限(5000)を超過します！\n(今月は既に ${currentMonthlyDebt} コイン借りています)[/info]`);
+                    if (myDebt + amt > 9999000) return sendTempMessage(roomId, `[info][title]⚠️ 借金上限エラー[/title]借金上限(9,999,000 コイン)を超過します！\n現在の借金: ${formatNumber(myDebt)} コイン[/info]`);
                     
-                    await supabase.from('players').update({ money: myMoney + amt, debt: myDebt + amt, monthly_debt: currentMonthlyDebt + amt, debt_month: thisMonth }).eq('account_id', senderId);
-                    return sendTempMessage(roomId, `[info][title]💳 お借り入れ完了[/title][piconname:${senderId}] 様\n${formatNumber(amt)} コインを借金しました。\n[hr]今月の借金可能枠: 残り ${formatNumber(5000 - (currentMonthlyDebt + amt))} コイン[/info]`);
+                    await supabase.from('players').update({ money: myMoney + amt, debt: myDebt + amt, last_interest_time: (myDebt === 0 ? Date.now() : player.last_interest_time) }).eq('account_id', senderId);
+                    return sendTempMessage(roomId, `[info][title]💳 お借り入れ完了[/title][piconname:${senderId}] 様\n${formatNumber(amt)} コインを借金しました。\n[hr]現在の借金: ${formatNumber(myDebt + amt)} コイン\n(※1時間ごとに0.5%の複利で利息が付きます)[/info]`);
                 }
             }
 
@@ -1285,17 +1351,15 @@ app.post('/webhook', (req, res) => {
                 let amt = parseInt((body.match(/(^|\n)\/give\s+([0-9]+)$/)||[])[2] || (body.match(/(^|\n)\/give\s+[0-9]+\s+([0-9]+)/)||[])[3], 10);
                 
                 if (targetAid && amt > 0) {
-                    let av = Math.max(0, myMoney - myDebt); 
-                    if (av < amt) return sendTempMessage(roomId, `[info][title]⚠️ 送金エラー[/title]${makeReplyTag(senderId, roomId, msgId)}\n送金枠(純資産)が不足しています！\n(借金があるため、送金可能額は ${formatNumber(av)} コインのみです)[/info]`);
+                    let netWorth = myMoney + myBank - myDebt;
+                    if (netWorth < amt) return sendTempMessage(roomId, `[info][title]⚠️ 送金エラー[/title]${makeReplyTag(senderId, roomId, msgId)}\n純資産が不足しています！\n送金可能額は純資産分(${formatNumber(Math.max(0, netWorth))} コイン)までです。[/info]`);
+                    if (myMoney < amt) return sendTempMessage(roomId, `[info]手持ちの所持金が不足しています。\n預金がある場合は /withdraw で手元に引き出してください。[/info]`);
                     
                     let tax = Math.floor(amt * 0.10); 
                     let rAmt = amt - tax;
                     
                     await supabase.from('players').update({ money: myMoney - amt }).eq('account_id', senderId);
-                    
-                    const { data: rc } = await supabase.from('players').select('*').eq('account_id', targetAid).single();
-                    if (rc) await supabase.from('players').update({ money: rc.money + rAmt }).eq('account_id', targetAid);
-                    else await supabase.from('players').insert({ account_id: targetAid, money: rAmt, debt: 0, slot_count: 0, work_limit: 5, msg_count: 0, job: 'サラリーマン' });
+                    await addMoneyWithRepay(targetAid, rAmt);
                     
                     return sendTempMessage(roomId, `[info][title]🎁 送金完了[/title][piconname:${senderId}] ➡ [piconname:${targetAid}]\n${formatNumber(amt)} コインを送金しました。\n[hr]※システム税 10% (${formatNumber(tax)} コイン) が引かれ、相手には ${formatNumber(rAmt)} コインが届きました。[/info]`);
                 }
@@ -1305,7 +1369,10 @@ app.post('/webhook', (req, res) => {
             if (body.trim() === '/status') {
                 const remSlot = Math.max(0, 5 - player.slot_count);
                 const dStr = myDebt > 0 ? `\n💳 借金: -${formatNumber(myDebt)} コイン` : '';
-                return sendTempMessage(roomId, `[info][title]📊 プレイヤー情報[/title][piconname:${senderId}] 様\n\n💰 所持金: ${formatNumber(myMoney)} コイン${dStr}\n💎 純資産: ${formatNumber(myMoney - myDebt)} コイン\n[hr]👔 職業: ${myJob}\n🎰 スロット残り: ${remSlot} 回\n💼 お仕事残り: ${player.work_limit} 回\n⛩️ 今日の運勢: ${player.omikuji_result || '未引'}\n[hr]※1分後に自動消去されます[/info]`);
+                const bStr = `\n🏦 預金残高: ${formatNumber(myBank)} コイン`;
+                const netWorth = myMoney + myBank - myDebt;
+
+                return sendTempMessage(roomId, `[info][title]📊 プレイヤー情報[/title][piconname:${senderId}] 様\n\n💰 所持金: ${formatNumber(myMoney)} コイン${bStr}${dStr}\n💎 純資産: ${formatNumber(netWorth)} コイン\n[hr]👔 職業: ${myJob}\n🎰 スロット残り: ${remSlot} 回\n💼 お仕事残り: ${player.work_limit} 回\n⛩️ 今日の運勢: ${player.omikuji_result || '未引'}\n[hr]※1分後に自動消去されます[/info]`);
             }
 
             if (body.trim() === '/money-rank') {
@@ -1314,11 +1381,11 @@ app.post('/webhook', (req, res) => {
                 const { data: ls } = await supabase.from('players').select('*'); 
                 let f = ls ? ls.filter(d => !eI.includes(d.account_id)) : [];
                 
-                f.sort((a,b) => ((b.money||0) - (b.debt||0)) - ((a.money||0) - (a.debt||0)));
+                f.sort((a,b) => ((b.money||0) + (b.bank||0) - (b.debt||0)) - ((a.money||0) + (a.bank||0) - (a.debt||0)));
                 let s = f.slice(0, 10).map((d, i) => {
-                    let net = (d.money||0) - (d.debt||0); 
+                    let net = (d.money||0) + (d.bank||0) - (d.debt||0); 
                     let md = i===0 ? "🥇" : (i===1 ? "🥈" : (i===2 ? "🥉" : "🔹")); 
-                    return `${md} ${i+1}位: [piconname:${d.account_id}]\n　💰 純資産: ${formatNumber(net)} コイン ${d.debt>0 ? `(借金:-${formatNumber(d.debt)})`:''} [${d.job||'サラリーマン'}]`;
+                    return `${md} ${i+1}位: [piconname:${d.account_id}]\n　💎 純資産: ${formatNumber(net)} コイン ${d.debt>0 ? `(借金:-${formatNumber(d.debt)})`:''} [${d.job||'サラリーマン'}]`;
                 }).join('\n[hr]');
                 
                 return sendTempMessage(roomId, `[info][title]👑 純資産ランキング TOP10[/title]${s}\n[hr]※5分後に自動消滅します[/info]`, 300000);
@@ -1413,8 +1480,8 @@ app.post('/webhook', (req, res) => {
                     if (msgRes && msgRes.data) {
                         let mId = msgRes.data.message_id;
                         const syms = ["🍉","🍋","🔔","🍇","7️⃣","6️⃣","5️⃣","🍒","🐉"];
-                        for(let i=0; i<8; i++) {
-                            await sleep(400);
+                        for(let i=0; i<12; i++) {
+                            await sleep(250);
                             let t1=syms[Math.floor(Math.random()*syms.length)];
                             let t2=syms[Math.floor(Math.random()*syms.length)];
                             let t3=syms[Math.floor(Math.random()*syms.length)];
@@ -1568,7 +1635,7 @@ app.post('/webhook', (req, res) => {
                         if (msgRes && msgRes.data) {
                             let mId = msgRes.data.message_id;
                             for(let i=0; i<8; i++) {
-                                await sleep(400);
+                                await sleep(250);
                                 let tempD = [Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1];
                                 await editMessage(roomId, mId, `[info]🎲 [piconname:${senderId}] サイコロを振っています...\n[ ${tempD.join(', ')} ][/info]`);
                             }
@@ -1586,7 +1653,7 @@ app.post('/webhook', (req, res) => {
                         if (msgRes && msgRes.data) {
                             let mId = msgRes.data.message_id;
                             for(let i=0; i<8; i++) {
-                                await sleep(400);
+                                await sleep(250);
                                 let tempD = Array.from({length:5}, ()=>Math.floor(Math.random()*6)+1);
                                 await editMessage(roomId, mId, `[info]🎲 [piconname:${pl.aid}] サイコロを振っています...\n[ ${tempD.map(d=>`🎲${d}`).join(' ')} ][/info]`);
                             }
@@ -1625,7 +1692,7 @@ app.post('/webhook', (req, res) => {
                             if (cMsgRes && cMsgRes.data) {
                                 let cmId = cMsgRes.data.message_id;
                                 for(let i=0; i<8; i++) {
-                                    await sleep(400);
+                                    await sleep(250);
                                     let tempD = [...pl.dice];
                                     nums.forEach(idx => tempD[idx-1] = Math.floor(Math.random()*6)+1);
                                     await editMessage(roomId, cmId, `[info]🎲 [piconname:${pl.aid}] サイコロを振り直しています...\n[ ${tempD.map(d=>`🎲${d}`).join(' ')} ][/info]`);
