@@ -18,10 +18,14 @@ let gambleActive = false;
 let localLastResetDate = null;
 const spamRecords = {};
 const gameState = {}; 
+const daifugoRooms = {}; // { privateRoomId: { mainRoomId, aid } }
+let BOT_ACCOUNT_ID = null;
+
+// ボットのアカウントIDを取得 (大富豪の部屋作成に必須)
+chatworkClient.get('/me').then(res => { BOT_ACCOUNT_ID = res.data.account_id.toString(); }).catch(()=>{});
 
 let kabuData = { price: 1000, history: [1000], totalIssued: 0, lastUpdate: Date.now() };
 
-// 起動時に設定を取得
 supabase.from('config').select('*').in('key', ['gamble_active', 'kabu_data']).then(r => {
     if (r.data) {
         let ga = r.data.find(x => x.key === 'gamble_active');
@@ -44,7 +48,6 @@ const verifySignature = (req) => {
     return sig === expected;
 };
 
-// --- Chatwork Messages ---
 const makeReplyTag = (aid, rid, mid) => `[rp aid=${aid} to=${rid}-${mid}]`;
 
 const sendMessage = async (roomId, text) => {
@@ -61,19 +64,19 @@ const sendTempMessage = async (roomId, text, ms = 60000) => {
 };
 
 const editMessage = async (roomId, messageId, text) => {
-    try {
-        await chatworkClient.put(`/rooms/${roomId}/messages/${messageId}`, `body=${encodeURIComponent(text)}`);
-    } catch(e) {}
+    try { await chatworkClient.put(`/rooms/${roomId}/messages/${messageId}`, `body=${encodeURIComponent(text)}`); } catch(e) {}
 };
 
-// --- 株価更新エンジン ---
+// --- 株価更新エンジン (超変動仕様) ---
 const updateKabuPrice = async () => {
     let now = Date.now();
     let hoursPassed = Math.floor((now - kabuData.lastUpdate) / 3600000);
     if (hoursPassed > 0) {
         for (let i = 0; i < hoursPassed; i++) {
-            let changePercent = (Math.random() * 0.1) - 0.05; // -5% ~ +5%
-            if (Math.random() < 0.05) changePercent = (Math.random() * 0.4) - 0.2; // 5%で -20% ~ +20% の変動
+            let changePercent = (Math.random() * 0.2) - 0.1; // 通常 -10% ~ +10%
+            let r = Math.random();
+            if (r < 0.05) changePercent = (Math.random() * 2.2) - 0.7; // 5%で超暴騰・超暴落 (-70% ~ +150%)
+            else if (r < 0.25) changePercent = (Math.random() * 0.7) - 0.3; // 20%で暴騰・暴落 (-30% ~ +40%)
             
             kabuData.price += Math.floor(kabuData.price * changePercent);
             if (kabuData.price < 1000) kabuData.price = 1000;
@@ -179,7 +182,7 @@ const checkSpam = (accountId) => {
     return (spamRecords[accountId].length >= 10);
 };
 
-// --- ゲームロジック郡 ---
+// --- ゲームエンジン ---
 const isRouletteWin = (betChoice, resultNumber) => {
     if (betChoice === 'red') return [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36].includes(resultNumber);
     if (betChoice === 'black') return [2,4,6,8,10,11,13,15,17,20,22,24,26,28,29,31,33,35].includes(resultNumber);
@@ -276,7 +279,7 @@ const getPokerBotKeepIndices = (hand) => {
         if(!counts[v]) counts[v] = [];
         counts[v].push(i);
     });
-    let keep = [], maxV = 0, maxVIdx = 0;
+    let keep = []; let maxV = 0; let maxVIdx = 0;
     for (let v in counts) {
         if (counts[v].length >= 2) keep.push(...counts[v]); 
         if (parseInt(v) > maxV) { maxV = parseInt(v); maxVIdx = counts[v][0]; }
@@ -318,6 +321,83 @@ const getYachtBotKeepIndices = (dice) => {
         keep.push(maxI);
     }
     return keep;
+};
+
+// --- 大富豪ロジック ---
+const createDaifugoRoom = async (aid, mainRoomId) => {
+    if (!BOT_ACCOUNT_ID) return null;
+    const params = new URLSearchParams();
+    params.append('name', `[大富豪手札] Player:${aid}`);
+    params.append('members_admin_ids', BOT_ACCOUNT_ID);
+    params.append('members_member_ids', aid);
+    params.append('description', '大富豪の専用手札部屋です。他人が入ってきたら無視します。');
+    params.append('icon_preset', 'group');
+    try {
+        const r = await chatworkClient.post('/rooms', params.toString());
+        const newRoomId = r.data.room_id.toString();
+        daifugoRooms[newRoomId] = { mainRoomId, aid };
+        return newRoomId;
+    } catch(e) { return null; }
+};
+
+const deleteDaifugoRoom = async (pRoomId) => {
+    try {
+        const params = new URLSearchParams();
+        params.append('action_type', 'delete');
+        await chatworkClient.delete(`/rooms/${pRoomId}`, { data: params.toString() });
+        delete daifugoRooms[pRoomId];
+    } catch(e) {}
+};
+
+const createDaifugoDeck = () => {
+    const suits = ['♠','♥','♦','♣'];
+    const ranks = ['3','4','5','6','7','8','9','10','J','Q','K','A','2'];
+    let d = [];
+    for(let s of suits) for(let r of ranks) d.push(s+r);
+    d.push('JOKER');
+    return d.sort(()=>Math.random()-0.5);
+};
+
+const getDaifugoVal = (cardStr) => {
+    if (cardStr === 'JOKER') return 16;
+    let r = cardStr.slice(1);
+    if (r==='A') return 14; if (r==='2') return 15;
+    if (r==='J') return 11; if (r==='Q') return 12; if (r==='K') return 13;
+    return parseInt(r);
+};
+
+const parseDaifugoPlay = (playStrs, handStrs, field, isKakumei, isJBack) => {
+    for(let c of playStrs) if(!handStrs.includes(c)) return {valid:false, msg:'手札に無いカードです'};
+    
+    let vals = playStrs.map(c => getDaifugoVal(c)).sort((a,b)=>a-b);
+    let type = '';
+    if (playStrs.length === 1) type = 'single';
+    else if (vals.every(v => v === vals[0] || v === 16)) type = 'pair';
+    else return {valid:false, msg:'単発かペアのみ対応しています'};
+
+    let baseVal = vals.find(v => v !== 16) || 16;
+    let rev = isKakumei !== isJBack; 
+    
+    if (field) {
+        if (field.count !== playStrs.length) return {valid:false, msg:'場の枚数と違います'};
+        if (field.type !== type) return {valid:false, msg:'場の役と違います'};
+        
+        let validVal = false;
+        if (rev) {
+            validVal = baseVal < field.val;
+            if(playStrs.includes('JOKER')) validVal = true;
+        } else {
+            validVal = baseVal > field.val;
+            if(playStrs.includes('JOKER')) validVal = true;
+        }
+        if(!validVal) return {valid:false, msg:'場のカードより弱いか同じです'};
+    }
+
+    let is8 = baseVal === 8;
+    let isJ = baseVal === 11;
+    let isKaku = playStrs.length >= 4;
+
+    return {valid:true, type, count: playStrs.length, val: baseVal, is8, isJ, isKaku};
 };
 
 // --- タイマー＆進行管理 ---
@@ -389,16 +469,23 @@ const handleGameTimeout = async (roomId) => {
             await checkGameProgress(roomId);
         }
     } else if (game.state === 'ACTION') {
-        if (['bj', 'poker', 'yacht', 'buta'].includes(game.type)) {
+        if (['bj', 'poker', 'yacht', 'buta', 'daifugo'].includes(game.type)) {
             let player = game.players[game.turnIndex];
             if (player && player.status === 'playing') {
-                player.status = 'stand';
-                await sendTempMessage(roomId, `[info]⏳ タイムアウトにより、[piconname:${player.aid}] 様は自動スタンドしました。[/info]`);
-                game.turnIndex++;
-                if (game.type === 'poker') await proceedNextPokerTurn(roomId);
-                else if (game.type === 'yacht') await proceedNextYachtTurn(roomId);
-                else if (game.type === 'buta') await proceedNextButaTurn(roomId);
-                else await proceedNextBJTurn(roomId);
+                if (game.type === 'daifugo') {
+                    // 大富豪のタイムアウトは強制パス
+                    await sendTempMessage(roomId, `[info]⏳ タイムアウトにより、[piconname:${player.aid}] 様はパスしました。[/info]`);
+                    game.daifugo.passCount++;
+                    await checkDaifugoNextTurn(roomId);
+                } else {
+                    player.status = 'stand';
+                    await sendTempMessage(roomId, `[info]⏳ タイムアウトにより、[piconname:${player.aid}] 様は自動スタンドしました。[/info]`);
+                    game.turnIndex++;
+                    if (game.type === 'poker') await proceedNextPokerTurn(roomId);
+                    else if (game.type === 'yacht') await proceedNextYachtTurn(roomId);
+                    else if (game.type === 'buta') await proceedNextButaTurn(roomId);
+                    else await proceedNextBJTurn(roomId);
+                }
             }
         } else {
             let kickedAids = [], activePlayers = [];
@@ -434,6 +521,7 @@ const handleGameTimeout = async (roomId) => {
     }
 };
 
+// --- 後半ここから ---
 const checkGameProgress = async (roomId) => {
     let game = gameState[roomId]; 
     if (!game || game.state === 'IDLE') return;
@@ -506,6 +594,33 @@ const checkGameProgress = async (roomId) => {
             await sendTempMessage(roomId, msg, 120000);
             game.turnIndex = 0;
             await proceedNextButaTurn(roomId);
+        } else if (game.type === 'daifugo') {
+            game.state = 'ACTION';
+            game.deck = createDaifugoDeck();
+            
+            // ディーラーをプレイヤーリストに混ぜる (aid: 'bot' とする)
+            game.players.push({ aid: 'bot', status: 'playing', hand: [] });
+            
+            let totalPlayers = game.players.length;
+            for(let i=0; i<53; i++){ game.players[i % totalPlayers].hand.push(game.deck[i]); }
+            
+            let msg = `[info][title]👑 大富豪 開始[/title]全員ベット完了！\n各プレイヤーの手札専用部屋を作成しました。\n\n`;
+            for (let p of game.players) {
+                if (p.aid !== 'bot') {
+                    p.pRoomId = await createDaifugoRoom(p.aid, roomId);
+                    msg += `[piconname:${p.aid}] 様の部屋: https://www.chatwork.com/#!rid${p.pRoomId}\n`;
+                    if (p.pRoomId) {
+                        let hStr = p.hand.map(c=>`[ ${c} ]`).join(' ');
+                        sendMessage(p.pRoomId, `[info][title]🃏 あなたの手札[/title]${hStr}\n\n出せるカードを /play S3 や /play H4 D4 のように指定するか、 /pass してください。[/info]`);
+                    }
+                }
+            }
+            msg += `[hr]順番に進行します。手札部屋からコマンドを送信してください。\n[/info]`;
+            await sendTempMessage(roomId, msg, 120000);
+            
+            game.daifugo = { field: null, isKakumei: false, isJBack: false, passCount: 0, rankings: [] };
+            game.turnIndex = Math.floor(Math.random() * totalPlayers);
+            await checkDaifugoNextTurn(roomId);
         } else {
             game.state = 'ACTION';
             let txt = game.type === 'chouhan' ? "丁半を予想し、 /chou (丁) または /han (半) と発言してください。" : "各プレイヤーは /roll でサイコロを振ってください。";
@@ -518,6 +633,208 @@ const checkGameProgress = async (roomId) => {
     }
 };
 
+// --- 大富豪 進行処理 ---
+const checkDaifugoNextTurn = async (roomId) => {
+    let g = gameState[roomId];
+    if (!g || g.type !== 'daifugo') return;
+
+    let activeCount = g.players.filter(p => p.status === 'playing').length;
+    if (activeCount <= 1) {
+        await resolveDaifugo(roomId);
+        return;
+    }
+
+    if (g.daifugo.passCount >= activeCount - 1) {
+        g.daifugo.field = null;
+        g.daifugo.isJBack = false;
+        g.daifugo.passCount = 0;
+        await sendMessage(roomId, `[info]🔄 全員がパスしました。場が流れます。[/info]`);
+    }
+
+    let p = g.players[g.turnIndex];
+    while (p.status !== 'playing') {
+        g.turnIndex = (g.turnIndex + 1) % g.players.length;
+        p = g.players[g.turnIndex];
+    }
+
+    let fStr = g.daifugo.field ? `【 ${g.daifugo.field.count} 枚出し (強さ: ${g.daifugo.field.val}) 】` : "【 自由 (空) 】";
+    let stateStr = (g.daifugo.isKakumei ? "🔥 革命中！ " : "") + (g.daifugo.isJBack ? "💫 イレブンバック中！" : "");
+    
+    await sendTempMessage(roomId, `[info]👑 ターン進行: ${p.aid==='bot'?'[ディーラー]':`[piconname:${p.aid}]`} の番です。\n現在の場: ${fStr}\n${stateStr}[/info]`);
+    
+    if (p.aid === 'bot') {
+        setTimeout(() => proceedBotDaifugoTurn(roomId), 2000);
+    } else {
+        if (p.pRoomId) {
+            let hStr = p.hand.map(c=>`[ ${c} ]`).join(' ');
+            sendMessage(p.pRoomId, `[info]📣 あなたのターンです！\n場: ${fStr}\n状態: ${stateStr}\n手札: ${hStr}\n\n/play または /pass を入力してください。[/info]`);
+        }
+        startGameTimer(roomId, 60000); 
+    }
+};
+
+const handleDaifugoAction = async (mainRoomId, aid, body) => {
+    let g = gameState[mainRoomId];
+    if (!g || g.type !== 'daifugo' || g.state !== 'ACTION') return;
+    
+    let p = g.players[g.turnIndex];
+    if (!p || p.aid !== aid || p.status !== 'playing') return;
+
+    if (body.startsWith('/pass')) {
+        g.daifugo.passCount++;
+        await sendMessage(mainRoomId, `[info][piconname:${aid}] は パス しました。[/info]`);
+        g.turnIndex = (g.turnIndex + 1) % g.players.length;
+        await checkDaifugoNextTurn(mainRoomId);
+        return;
+    }
+
+    if (body.startsWith('/play ')) {
+        let playStrs = body.replace('/play ', '').trim().split(/\s+/);
+        let res = parseDaifugoPlay(playStrs, p.hand, g.daifugo.field, g.daifugo.isKakumei, g.daifugo.isJBack);
+        
+        if (!res.valid) {
+            sendMessage(p.pRoomId, `[info]⚠️ 出せません: ${res.msg}[/info]`);
+            return;
+        }
+
+        p.hand = p.hand.filter(c => !playStrs.includes(c));
+        g.daifugo.field = res;
+        g.daifugo.passCount = 0;
+
+        await sendMessage(mainRoomId, `[info][piconname:${aid}] が 【 ${playStrs.join(' ')} 】 を出しました！ (残り ${p.hand.length}枚)[/info]`);
+        
+        if (res.isKaku) { g.daifugo.isKakumei = !g.daifugo.isKakumei; await sendMessage(mainRoomId, `[info]🔥 革命発生！！！[/info]`); }
+        if (res.isJ) { g.daifugo.isJBack = true; await sendMessage(mainRoomId, `[info]💫 イレブンバック発生！[/info]`); }
+
+        if (p.hand.length === 0) {
+            p.status = 'won';
+            g.daifugo.rankings.push(p);
+            await sendMessage(mainRoomId, `[info]🎉 [piconname:${aid}] が上がりました！[/info]`);
+        }
+
+        if (res.is8) {
+            await sendMessage(mainRoomId, `[info]✂️ 8切り！ ターン継続！[/info]`);
+            g.daifugo.field = null;
+            g.daifugo.isJBack = false;
+            await checkDaifugoNextTurn(mainRoomId);
+            return;
+        }
+
+        g.turnIndex = (g.turnIndex + 1) % g.players.length;
+        await checkDaifugoNextTurn(mainRoomId);
+    }
+};
+
+const proceedBotDaifugoTurn = async (roomId) => {
+    let g = gameState[roomId];
+    if (!g || g.type !== 'daifugo') return;
+    let p = g.players[g.turnIndex];
+
+    let rev = g.daifugo.isKakumei !== g.daifugo.isJBack;
+    p.hand.sort((a,b) => rev ? getDaifugoVal(b) - getDaifugoVal(a) : getDaifugoVal(a) - getDaifugoVal(b)); 
+
+    let playStrs = [];
+    if (!g.daifugo.field) {
+        playStrs.push(p.hand[0]);
+    } else {
+        let f = g.daifugo.field;
+        let cCounts = {};
+        p.hand.forEach(c => { let v = getDaifugoVal(c); cCounts[v] = (cCounts[v]||[]); cCounts[v].push(c); });
+        
+        for (let v in cCounts) {
+            let numV = parseInt(v);
+            let canBeat = rev ? numV < f.val : numV > f.val;
+            if (numV === 16) canBeat = true; 
+            
+            if (cCounts[v].length >= f.count && canBeat) {
+                playStrs = cCounts[v].slice(0, f.count);
+                break;
+            }
+        }
+    }
+
+    if (playStrs.length > 0) {
+        let res = parseDaifugoPlay(playStrs, p.hand, g.daifugo.field, g.daifugo.isKakumei, g.daifugo.isJBack);
+        p.hand = p.hand.filter(c => !playStrs.includes(c));
+        g.daifugo.field = res;
+        g.daifugo.passCount = 0;
+        await sendMessage(roomId, `[info]🤖 ディーラーが 【 ${playStrs.join(' ')} 】 を出しました！ (残り ${p.hand.length}枚)[/info]`);
+        
+        if (res.isKaku) { g.daifugo.isKakumei = !g.daifugo.isKakumei; await sendMessage(roomId, `[info]🔥 革命発生！！！[/info]`); }
+        if (res.isJ) { g.daifugo.isJBack = true; await sendMessage(roomId, `[info]💫 イレブンバック発生！[/info]`); }
+
+        if (p.hand.length === 0) {
+            p.status = 'won';
+            g.daifugo.rankings.push(p);
+            await sendMessage(roomId, `[info]🎉 ディーラーが上がりました！[/info]`);
+        }
+
+        if (res.is8) {
+            await sendMessage(roomId, `[info]✂️ 8切り！ ディーラーのターンが継続します。[/info]`);
+            g.daifugo.field = null;
+            g.daifugo.isJBack = false;
+            setTimeout(() => checkDaifugoNextTurn(roomId), 1500);
+            return;
+        }
+    } else {
+        g.daifugo.passCount++;
+        await sendMessage(roomId, `[info]🤖 ディーラーは パス しました。[/info]`);
+    }
+
+    g.turnIndex = (g.turnIndex + 1) % g.players.length;
+    await checkDaifugoNextTurn(roomId);
+};
+
+const resolveDaifugo = async (roomId) => {
+    let g = gameState[roomId];
+    if (!g) return;
+    clearTimeout(g.timeoutId);
+    
+    // 残りの1人を最下位に
+    let lastP = g.players.find(x => x.status === 'playing');
+    if (lastP) g.daifugo.rankings.push(lastP);
+
+    // 部屋削除
+    for (let p of g.players) {
+        if (p.pRoomId) await deleteDaifugoRoom(p.pRoomId);
+    }
+
+    let msg = `[info][title]👑 大富豪 最終結果[/title]`;
+    let ranks = ["大富豪", "富豪", "平民", "貧民", "大貧民"];
+    let mults = [3.0, 1.5, 0, 0, 0]; // 簡易配当
+    
+    for (let i=0; i<g.daifugo.rankings.length; i++) {
+        let p = g.daifugo.rankings[i];
+        let rName = ranks[i] || "平民";
+        let mult = mults[i] || 0;
+        
+        let resTxt = "";
+        if (p.aid !== 'bot') {
+            let isWin = mult > 0;
+            if (p.isLifeBet) {
+                resTxt = await processLifeBetResult(p, isWin, false, roomId);
+            } else {
+                if (isWin) {
+                    let winAmt = Math.floor(p.bet * mult);
+                    await addMoneyWithRepay(p.aid, winAmt);
+                    resTxt = `(cracker) ${rName}！ (${mult}倍) (+${formatNumber(winAmt)})`;
+                } else {
+                    resTxt = `💀 ${rName}... (没収)`;
+                }
+            }
+            if (isWin) await updateWinStreak(p.aid, 'win', roomId);
+            else await updateWinStreak(p.aid, 'lose', roomId);
+            msg += `${i+1}位: [piconname:${p.aid}] ➡ ${resTxt}\n`;
+        } else {
+            msg += `${i+1}位: 🤖 ディーラー (${rName})\n`;
+        }
+    }
+    await sendMessage(roomId, msg + "[/info]");
+    gameState[roomId] = null;
+};
+
+
+// --- 各ゲームのターン進行 ---
 const proceedNextBJTurn = async (roomId) => {
     let game = gameState[roomId]; 
     if (!game || game.type !== 'bj') return;
@@ -935,7 +1252,7 @@ const resolveBJ = async (roomId) => {
                 await addMoneyWithRepay(player.aid, player.bet); 
             } else {
                 winAmt = Math.floor(player.bet * (isBJ ? 2.5 : 2));
-                resTxt = `(cracker) 勝利！ (BJ: 配当2.5倍) (+${formatNumber(winAmt)})`; 
+                resTxt = isBJ ? `(cracker) 勝利！ (BJ: 配当2.5倍) (+${formatNumber(winAmt)})` : `(cracker) 勝利！ (+${formatNumber(winAmt)})`; 
                 await addMoneyWithRepay(player.aid, winAmt); 
             }
         }
@@ -1287,6 +1604,7 @@ const resolveDerby = async (roomId, mId) => {
     gameState[roomId] = null; 
 };
 
+
 // Webhookのルーティング定義
 app.post('/webhook', (req, res) => {
     if (!verifySignature(req)) return res.status(401).send('Invalid Signature');
@@ -1304,6 +1622,17 @@ app.post('/webhook', (req, res) => {
 
     (async () => {
         try {
+            // --- 大富豪：専用部屋からのアクション処理 ---
+            if (daifugoRooms[roomId]) {
+                const { mainRoomId, aid } = daifugoRooms[roomId];
+                if (senderId !== aid && senderId !== BOT_ACCOUNT_ID) return;
+                
+                if (body.startsWith('/pass') || body.startsWith('/play ')) {
+                    handleDaifugoAction(mainRoomId, aid, body.trim());
+                }
+                return;
+            }
+
             const rpMatch = body.match(/\[(?:rp|返信|qtmeta|reply)\s+aid=([0-9]+)/i);
             const repliedAid = rpMatch ? rpMatch[1] : null;
 
@@ -1466,7 +1795,7 @@ app.post('/webhook', (req, res) => {
                 } else return sendTempMessage(roomId, `[info]⚠️ 指定した数の株を所持していません。[/info]`);
             }
 
-            // --- コマンド実行部 ---
+            // --- 個別ルール ---
             const helpMatch = body.trim().match(/^\/help\s+([a-zA-Z]+)$/);
             if (helpMatch) {
                 let g = helpMatch[1].toLowerCase();
@@ -1480,6 +1809,7 @@ app.post('/webhook', (req, res) => {
                 else if (g === 'sicbo') txt = `[title]🎲 シックボー(大小)のルール[/title]3つのサイコロを振ります。\n合計が11〜17なら「dai(大)」、4〜10なら「shou(小)」。ゾロ目なら「any」です。\n【配当】大・小 (1.8倍) / エニートリプル (15倍)`;
                 else if (g === 'rolet') txt = `[title]🎡 ルーレットのルール[/title]数字(0〜36)や属性にベットします。\n/bet 100 red (赤), black (黒), even (偶数), odd (奇数), high (19-36), low (1-18)\nまたは /bet 100 5 のように数字を指定できます。\n【配当】属性は 2倍。数字単体は 36倍。`;
                 else if (g === 'buta') txt = `[title]🐷 豚のしっぽのルール[/title]ディーラーとチキンレースをします。\n/draw でカードを引き、直前に引いたカードと「同じマーク(スート)」が出たらドボン(即負け)。\n任意のタイミングで /stand で確定できます。\n【配当】ディーラーより引いた枚数が多ければ 賭け金×2。引き分けは返金。`;
+                else if (g === 'daifugo') txt = `[title]👑 大富豪のルール[/title]各プレイヤーに個別の「手札部屋」が作られます。\n手札部屋から /play S3 や /play H4 D4 のように出して進行します。\n出せない場合は /pass してください。\n【特殊ルール】8切り、革命、イレブンバック に対応しています。\n【配当】1位(大富豪): 3倍、2位(富豪): 1.5倍、それ以外は没収。`;
                 else txt = `指定されたゲームのルールは見つかりませんでした。`;
                 return sendTempMessage(roomId, `[info]${txt}[/info]`, 120000);
             }
@@ -1519,6 +1849,7 @@ app.post('/webhook', (req, res) => {
 /poker : ポーカー募集 (/change [番号] か /stand)
 /yacht : ヨット募集 (/change [番号] か /stand)
 /buta : 豚のしっぽ募集 (/draw か /stand)
+/daifugo : 大富豪募集 (個別部屋連動システム！)
 
 【 👑 管理者専用 】
 /take [金], /fi-game, /st-gya, /fi-gya, /blacklist 等[/info]`;
@@ -1589,11 +1920,11 @@ app.post('/webhook', (req, res) => {
                 }
             }
 
-            if (/(^|\n)\/st-gya\b/.test(body) && await isUserAdmin(roomId, senderId)) { 
+            if (body.startsWith('/st-gya') && await isUserAdmin(roomId, senderId)) { 
                 gambleActive = true; await supabase.from('config').upsert({key:'gamble_active', value:'true'}); 
                 return sendMessage(roomId, `[info][title]🎰 カジノ＆ライフ[/title]システムが【 有効 】になりました！[/info]`); 
             }
-            if (/(^|\n)\/fi-gya\b/.test(body) && await isUserAdmin(roomId, senderId)) { 
+            if (body.startsWith('/fi-gya') && await isUserAdmin(roomId, senderId)) { 
                 gambleActive = false; await supabase.from('config').upsert({key:'gamble_active', value:'false'}); 
                 return sendMessage(roomId, `[info][title]🚫 カジノ＆ライフ[/title]システムが【 停止 】しました。[/info]`); 
             }
@@ -1826,13 +2157,13 @@ app.post('/webhook', (req, res) => {
                 }
             }
 
-            if (body.match(/(^|\n)\/(chouhan|cc|derby|bj|poker|yacht|sicbo|rolet|buta)\b/) && gambleActive) {
+            if (body.match(/(^|\n)\/(chouhan|cc|derby|bj|poker|yacht|sicbo|rolet|buta|daifugo)\b/) && gambleActive) {
                 if (gameState[roomId]) return sendTempMessage(roomId, `[info][title]⚠️ エラー[/title]現在、別のゲームが進行中です。終了までお待ちください。[/info]`);
                 
-                let t = body.match(/(^|\n)\/(chouhan|cc|derby|bj|poker|yacht|sicbo|rolet|buta)\b/)[2];
+                let t = body.match(/(^|\n)\/(chouhan|cc|derby|bj|poker|yacht|sicbo|rolet|buta|daifugo)\b/)[2];
                 gameState[roomId] = { type: t, state: 'RECRUITING', host: senderId, players: [{ aid: senderId, bet: 0 }] };
                 
-                let tN = t==='derby' ? "🐎 みんなでダービー" : (t==='cc' ? "🎲 チンチロリン" : (t==='bj' ? "🃏 ブラックジャック" : (t==='poker' ? "🃏 ポーカー" : (t==='yacht' ? "🎲 ヨット" : (t==='sicbo' ? "🎲 シックボー(大小)" : (t==='rolet' ? "🎡 ルーレット" : (t==='buta' ? "🐷 豚のしっぽ" : "🎲 丁半ゲーム"))))))); 
+                let tN = t==='derby' ? "🐎 みんなでダービー" : (t==='cc' ? "🎲 チンチロリン" : (t==='bj' ? "🃏 ブラックジャック" : (t==='poker' ? "🃏 ポーカー" : (t==='yacht' ? "🎲 ヨット" : (t==='sicbo' ? "🎲 シックボー(大小)" : (t==='rolet' ? "🎡 ルーレット" : (t==='buta' ? "🐷 豚のしっぽ" : (t==='daifugo' ? "👑 大富豪" : "🎲 丁半ゲーム")))))))); 
                 let ex = `/join`;
                 
                 if (t === 'derby') {
