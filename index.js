@@ -1,4 +1,3 @@
-
 const express = require('express');
 const crypto = require('crypto');
 const axios = require('axios');
@@ -580,7 +579,11 @@ const proceedNextPokerTurn = async (roomId) => {
     }
     await proceedBotPokerTurn(roomId);
 };
+// --- 前半ここまで ---
 
+2️⃣ 後半のコード
+
+// --- 後半ここから ---
 const proceedBotPokerTurn = async (roomId) => {
     let game = gameState[roomId];
     if (!game) return;
@@ -1352,25 +1355,26 @@ app.post('/webhook', (req, res) => {
 
             // --- 👑 管理者コマンド ---
             if (/(^|\n)\/take\b/.test(body) && gambleActive && await isUserAdmin(roomId, senderId)) {
-                let parts = body.trim().split(/\s+/);
-                let targetAid = repliedAid;
-                let amtStr = null;
-                
-                if (parts[0] === '/take') {
-                    if (parts.length === 2 && targetAid) {
-                        amtStr = parts[1];
-                    } else if (parts.length === 3) {
-                        targetAid = parts[1];
-                        amtStr = parts[2];
+                let takeMatch = body.match(/(?:^|\n)\/take\s+(.*)/);
+                if (takeMatch) {
+                    let args = takeMatch[1].trim().split(/\s+/);
+                    let targetAid = repliedAid;
+                    let amtStr = null;
+                    
+                    if (args.length === 1 && targetAid) {
+                        amtStr = args[0];
+                    } else if (args.length >= 2) {
+                        targetAid = args[0];
+                        amtStr = args[1];
                     }
-                }
-                
-                if (targetAid && amtStr) {
-                    let amt = parseInt(amtStr, 10);
-                    if (!isNaN(amt) && amt !== 0) {
-                        await addMoneyWithRepay(targetAid, amt); 
-                        let action = amt > 0 ? "付与しました" : "没収しました";
-                        return sendTempMessage(roomId, `[info][title]👑 特別資金操作[/title]管理者が [piconname:${targetAid}] 様へ ${formatNumber(Math.abs(amt))} コインを${action}。[/info]`); 
+                    
+                    if (targetAid && amtStr) {
+                        let amt = parseInt(amtStr, 10);
+                        if (!isNaN(amt) && amt !== 0) {
+                            await addMoneyWithRepay(targetAid, amt);
+                            let action = amt > 0 ? "付与しました" : "没収しました";
+                            return sendTempMessage(roomId, `[info][title]👑 特別資金操作[/title]管理者が [piconname:${targetAid}] 様へ ${formatNumber(Math.abs(amt))} コインを${action}。[/info]`); 
+                        }
                     }
                 }
             }
