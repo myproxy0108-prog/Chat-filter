@@ -1,4 +1,3 @@
-
 const express = require('express');
 const crypto = require('crypto');
 const axios = require('axios');
@@ -60,7 +59,7 @@ const editMessage = async (roomId, messageId, text) => {
     } catch(e) {}
 };
 
-// --- お金管理 ---
+// --- お金・借金管理 (自動返済・複利計算対応) ---
 const addMoneyWithRepay = async (accountId, amount) => {
     const { data: p } = await supabase.from('players').select('*').eq('account_id', accountId).single();
     let money = p ? (p.money || 0) : 0;
@@ -89,7 +88,27 @@ const addMoneyWithRepay = async (accountId, amount) => {
     if (p) {
         await supabase.from('players').update({ money: money, debt: debt, last_interest_time: lastTime }).eq('account_id', accountId);
     } else {
-        await supabase.from('players').insert({ account_id: accountId, money: money, bank: bank, debt: debt, last_interest_time: lastTime, slot_count: 0, work_limit: 5, msg_count: 0, job: 'サラリーマン' });
+        await supabase.from('players').insert({ account_id: accountId, money: money, bank: bank, debt: debt, last_interest_time: lastTime, slot_count: 0, work_limit: 5, msg_count: 0, job: 'サラリーマン', win_streak: 0, life_bet_unlocked: false });
+    }
+};
+
+const updateWinStreak = async (accountId, result, roomId) => {
+    if (result === 'draw') return;
+    const { data: p } = await supabase.from('players').select('win_streak').eq('account_id', accountId).single();
+    if (!p) return;
+    let streak = p.win_streak || 0;
+    if (result === 'win') {
+        streak++;
+        let updates = { win_streak: streak };
+        if (streak === 8) {
+            updates.life_bet_unlocked = true;
+            setTimeout(() => {
+                sendMessage(roomId, `[info][piconname:${accountId}]\nなんだろ…いまならいける気がする…\n(※次回のゲームで特別に /bet life が使用可能になりました！)[/info]`);
+            }, 1000);
+        }
+        await supabase.from('players').update(updates).eq('account_id', accountId);
+    } else if (result === 'lose') {
+        await supabase.from('players').update({ win_streak: 0, life_bet_unlocked: false }).eq('account_id', accountId);
     }
 };
 
@@ -404,7 +423,8 @@ const handleGameTimeout = async (roomId) => {
                 if (game.type === 'cc' && !player.res) isKicked = true;
                 
                 if (isKicked) {
-                    kickedAids.push(player.aid); // 没収
+                    kickedAids.push(player.aid);
+                    await supabase.from('players').update({ win_streak: 0, life_bet_unlocked: false }).eq('account_id', player.aid);
                     if (player.isLifeBet) {
                         await supabase.from('blacklist').insert({ account_id: player.aid });
                         await updateRoomMembers(roomId, [player.aid], 'readonly');
@@ -433,7 +453,6 @@ const checkGameProgress = async (roomId) => {
     let game = gameState[roomId]; 
     if (!game || game.state === 'IDLE') return;
     
-    // /bet life の保留中プレイヤーがいなくて、かつ全員がbet>0(lifeBet含む)
     if (game.state === 'BETTING' && game.players.every(p => (p.bet > 0 || p.isLifeBet) && !p.pendingLifeBet)) {
         if (game.type === 'derby') {
             clearTimeout(game.timeoutId); if (game.remindId) clearTimeout(game.remindId);
@@ -935,6 +954,9 @@ const resolveBJ = async (roomId) => {
                 await addMoneyWithRepay(player.aid, winAmt); 
             }
         }
+        if (isWin) await updateWinStreak(player.aid, 'win', roomId);
+        else if (isLose) await updateWinStreak(player.aid, 'lose', roomId);
+        
         msg += `[piconname:${player.aid}]: スコア ${pScore} ➡ ${resTxt}\n`;
     }
     await sendMessage(roomId, msg + "[/info]");
@@ -971,6 +993,9 @@ const resolvePoker = async (roomId) => {
                 resTxt = `💀 負け (没収)`; 
             }
         }
+        if (isWin) await updateWinStreak(player.aid, 'win', roomId);
+        else if (isLose) await updateWinStreak(player.aid, 'lose', roomId);
+
         msg += `[piconname:${player.aid}]: ${pStr} (${pEv.name})\n➡ ${resTxt}\n`;
     }
     await sendMessage(roomId, msg + "[/info]");
@@ -1007,6 +1032,9 @@ const resolveYacht = async (roomId) => {
                 resTxt = `💀 負け (没収)`; 
             }
         }
+        if (isWin) await updateWinStreak(player.aid, 'win', roomId);
+        else if (isLose) await updateWinStreak(player.aid, 'lose', roomId);
+
         msg += `[piconname:${player.aid}]: [${pStr}] (${pEv.name})\n➡ ${resTxt}\n`;
     }
     await sendMessage(roomId, msg + "[/info]");
@@ -1045,7 +1073,7 @@ const resolveButa = async (roomId) => {
             resTxt = await processLifeBetResult(player, isWin, isDraw, roomId);
         } else {
             if (isLose) { 
-                resTxt = `💀 負け (没収)`; 
+                resTxt = `💀 負け (ドボン・没収)`; 
             } else if (isWin) {
                 let winAmt = player.bet * 2; 
                 resTxt = `🎉 勝利！ (+${formatNumber(winAmt)})`; 
@@ -1055,6 +1083,9 @@ const resolveButa = async (roomId) => {
                 await addMoneyWithRepay(player.aid, player.bet); 
             } 
         }
+        if (isWin) await updateWinStreak(player.aid, 'win', roomId);
+        else if (isLose) await updateWinStreak(player.aid, 'lose', roomId);
+
         msg += `[piconname:${player.aid}]: 枚数 ${pScore} ➡ ${resTxt}\n`;
     }
     await sendMessage(roomId, msg + "[/info]");
@@ -1091,6 +1122,9 @@ const resolveChinchiro = async (roomId) => {
                 resTxt = `💀 負け (没収)`; 
             }
         }
+        if (isWin) await updateWinStreak(player.aid, 'win', roomId);
+        else if (isLose) await updateWinStreak(player.aid, 'lose', roomId);
+
         msg += `[piconname:${player.aid}]: [${r.dice.join('')}] ${r.name} ➡ ${resTxt}\n`; 
     }
     await sendMessage(roomId, msg + "[/info]"); 
@@ -1127,6 +1161,9 @@ const resolveChouhan = async (roomId, mId) => {
                 resTxt = `💀 はずれ (没収)`; 
             }
         }
+        if (isWin) await updateWinStreak(player.aid, 'win', roomId);
+        else await updateWinStreak(player.aid, 'lose', roomId);
+
         msg += `[piconname:${player.aid}]: 予想[${player.choice === 'chou' ? '丁' : '半'}] ➡ ${resTxt}\n`; 
     }
     await sendMessage(roomId, msg + "[/info]"); 
@@ -1172,6 +1209,9 @@ const resolveSicbo = async (roomId, mId) => {
                 resTxt = `💀 はずれ (没収)`;
             }
         }
+        if (isWin) await updateWinStreak(player.aid, 'win', roomId);
+        else await updateWinStreak(player.aid, 'lose', roomId);
+
         msg += `[piconname:${player.aid}]: 予想[${choiceName}] ➡ ${resTxt}\n`;
     }
     await sendMessage(roomId, msg + "[/info]"); 
@@ -1201,6 +1241,9 @@ const resolveRoulette = async (roomId, resultNum) => {
                 resTxt = `💀 はずれ (没収)`; 
             }
         }
+        if (isWin) await updateWinStreak(player.aid, 'win', roomId);
+        else await updateWinStreak(player.aid, 'lose', roomId);
+
         msg += `[piconname:${player.aid}]: 予想[${player.choice}] ➡ ${resTxt}\n`; 
     }
     await sendMessage(roomId, msg + "[/info]"); 
@@ -1241,17 +1284,19 @@ const resolveDerby = async (roomId, mId) => {
             if (isWin) { 
                 let winAmt = Math.floor(player.bet * odd); 
                 await addMoneyWithRepay(player.aid, winAmt); 
-                resTxt = `(cracker) 的中！ (+${formatNumber(winAmt)})`; 
+                resTxt = `(cracker) 的中！ (+${formatNumber(winAmt)} コイン)\n`; 
             } else { 
-                resTxt = `💀 はずれ (没収)`; 
+                resTxt = `💀 はずれ (没収)\n`; 
             }
         }
-        msg += `[piconname:${player.aid}]: 予想[${player.choice}] ➡ ${resTxt}\n`; 
+        if (isWin) await updateWinStreak(player.aid, 'win', roomId);
+        else await updateWinStreak(player.aid, 'lose', roomId);
+
+        msg += `[piconname:${player.aid}]: 予想[${player.choice}] ➡ ${resTxt}`; 
     }
     await sendMessage(roomId, msg + "[/info]"); 
     gameState[roomId] = null; 
 };
-
 
 // --- Webhook メイン処理 ---
 app.post('/webhook', (req, res) => {
@@ -1340,7 +1385,7 @@ app.post('/webhook', (req, res) => {
             let { data: player } = await supabase.from('players').select('*').eq('account_id', senderId).single();
             
             if (!player) {
-                player = { account_id: senderId, money: 0, debt: 0, bank: 0, last_interest_time: Date.now(), slot_count: 0, work_limit: 5, msg_count: 1, job: 'サラリーマン', daily_give_amount: 0, last_give_date: today };
+                player = { account_id: senderId, money: 0, debt: 0, bank: 0, last_interest_time: Date.now(), slot_count: 0, work_limit: 5, msg_count: 1, job: 'サラリーマン', daily_give_amount: 0, last_give_date: today, win_streak: 0, life_bet_unlocked: false };
                 await supabase.from('players').insert(player);
             } else if (gambleActive && !body.startsWith('/')) {
                 let mc = (player.msg_count || 0) + 1; 
@@ -1357,7 +1402,7 @@ app.post('/webhook', (req, res) => {
             let myBank = player.bank || 0;
 
             if (myDebt > 0) {
-                let daysPassed = Math.floor((now - lastTime) / 86400000); // 1日ごとに利息
+                let daysPassed = Math.floor((now - lastTime) / 86400000); 
                 if (daysPassed > 0) {
                     myDebt = Math.min(Math.floor(myDebt * Math.pow(1.005, daysPassed)), 990000);
                     lastTime = lastTime + (daysPassed * 86400000);
@@ -1415,7 +1460,7 @@ app.post('/webhook', (req, res) => {
 
 【 🎲 テーブルゲーム 】 (※詳しいルールは /help [ゲーム名] で確認)
 ※1回のゲームの最大ベット額は 999万 までです。
-※ /bet life : 命を賭ける (成功で所持金+銀行が8~15倍。失敗で永久出禁)
+※ /bet life : 命を賭ける (8連勝した者のみ使用可能。成功で所持金+銀行が8~15倍。失敗で永久出禁)
 /chouhan : 丁半ゲーム募集
 /sicbo : シックボー募集 (/bet [額] [dai/shou/any])
 /cc : チンチロリン募集 (参加者は /roll)
@@ -1605,9 +1650,10 @@ app.post('/webhook', (req, res) => {
                 const remSlot = Math.max(0, 5 - player.slot_count);
                 const dStr = myDebt > 0 ? `\n💳 借金: -${formatNumber(myDebt)} コイン` : '';
                 const bStr = `\n🏦 預金残高: ${formatNumber(myBank)} コイン`;
+                const streakStr = `\n🔥 連勝記録: ${player.win_streak || 0} 連勝`;
                 const netWorth = myMoney + myBank - myDebt;
 
-                return sendTempMessage(roomId, `[info][title]📊 プレイヤー情報[/title][piconname:${senderId}] 様\n\n💰 所持金: ${formatNumber(myMoney)} コイン${bStr}${dStr}\n💎 純資産: ${formatNumber(netWorth)} コイン\n[hr]👔 職業: ${myJob}\n🎰 スロット残り: ${remSlot} 回\n💼 お仕事残り: ${player.work_limit} 回\n⛩️ 今日の運勢: ${player.omikuji_result || '未引'}\n[hr]※1分後に自動消去されます[/info]`);
+                return sendTempMessage(roomId, `[info][title]📊 プレイヤー情報[/title][piconname:${senderId}] 様\n\n💰 所持金: ${formatNumber(myMoney)} コイン${bStr}${dStr}\n💎 純資産: ${formatNumber(netWorth)} コイン${streakStr}\n[hr]👔 職業: ${myJob}\n🎰 スロット残り: ${remSlot} 回\n💼 お仕事残り: ${player.work_limit} 回\n⛩️ 今日の運勢: ${player.omikuji_result || '未引'}\n[hr]※1分後に自動消去されます[/info]`);
             }
 
             if (body.trim() === '/money-rank') {
@@ -1693,7 +1739,10 @@ app.post('/webhook', (req, res) => {
                 if (bet > 9990000) return sendTempMessage(roomId, `[info]⚠️ 1回の最大ベット額は 9,990,000 コインまでです。[/info]`);
                 
                 if (bet > 0 && myMoney >= bet) {
-                    await supabase.from('players').update({ money: myMoney - bet, slot_count: player.slot_count + 1, last_slot_time: Date.now() }).eq('account_id', senderId);
+                    let updates = { money: myMoney - bet, slot_count: player.slot_count + 1, last_slot_time: Date.now() };
+                    if (player.life_bet_unlocked) updates.life_bet_unlocked = false;
+                    await supabase.from('players').update(updates).eq('account_id', senderId);
+                    if (player.life_bet_unlocked) sendTempMessage(roomId, `[info]※通常のベットを行ったため、命賭けの権利は消滅しました。[/info]`);
                     
                     let r = Math.random() * 100, omi = (player.omikuji_date === today) ? player.omikuji_result : null, oM = "";
                     if(omi === '大吉') { r = Math.max(0, r - 0.4); oM = "(⛩️大吉ボーナス!)"; } 
@@ -1815,7 +1864,10 @@ app.post('/webhook', (req, res) => {
                         await supabase.from('blacklist').insert({ account_id: p.aid });
                         await updateRoomMembers(roomId, [p.aid], 'readonly');
                         pMsg = " (命賭けキャンセルペナルティ: 永久追放)";
+                    } else if (p.bet > 0) {
+                        await supabase.from('players').update({ win_streak: 0, life_bet_unlocked: false }).eq('account_id', senderId);
                     }
+
                     sendTempMessage(roomId, `[info]🚪 [piconname:${senderId}] が退出しました。${pMsg}[/info]`);
                     
                     if (gameState[roomId].players.length === 0) { 
@@ -1837,6 +1889,9 @@ app.post('/webhook', (req, res) => {
                     let betType = bM[2];
 
                     if (betType === 'life') {
+                        if (!player.life_bet_unlocked) {
+                            return sendTempMessage(roomId, `[info]⚠️ /bet life は8連勝した者のみが使える特権です。[/info]`);
+                        }
                         if (gameState[roomId].type === 'derby') {
                             let h = bM[3]; 
                             if (!h || !gameState[roomId].oddsMap[h]) return sendTempMessage(roomId, `[info]⚠️ 馬連(例: 1-2)を正しく指定してください\n例: /bet life 1-2[/info]`);
@@ -1871,7 +1926,12 @@ app.post('/webhook', (req, res) => {
                                 pl.choice = h;
                             }
                             pl.bet = b; 
-                            await supabase.from('players').update({ money: myMoney - b }).eq('account_id', senderId);
+                            let updates = { money: myMoney - b };
+                            if (player.life_bet_unlocked) {
+                                updates.life_bet_unlocked = false;
+                                sendTempMessage(roomId, `[info]※通常のベットを行ったため、命賭けの権利は消滅しました。[/info]`);
+                            }
+                            await supabase.from('players').update(updates).eq('account_id', senderId);
                             sendTempMessage(roomId, `[info]💰 [piconname:${senderId}] ${formatNumber(b)} コインをベットしました！[/info]`);
                             checkGameProgress(roomId);
                         } else return sendTempMessage(roomId, `[info]⚠️ ${makeReplyTag(senderId, roomId, msgId)} お金が足りません！[/info]`);
@@ -1888,7 +1948,7 @@ app.post('/webhook', (req, res) => {
                         if (pl.pendingChoice) pl.choice = pl.pendingChoice;
                         pl.lifeBetBaseAmount = myMoney + myBank;
                         pl.bet = pl.lifeBetBaseAmount > 0 ? pl.lifeBetBaseAmount : 1; 
-                        await supabase.from('players').update({ money: 0, bank: 0 }).eq('account_id', senderId);
+                        await supabase.from('players').update({ money: 0, bank: 0, life_bet_unlocked: false }).eq('account_id', senderId);
                         pl.pendingLifeBet = false;
                         sendTempMessage(roomId, `[info]💀 [piconname:${senderId}] が命を賭けました！[/info]`);
                         checkGameProgress(roomId);
