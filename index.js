@@ -68,12 +68,12 @@ const addMoneyWithRepay = async (accountId, amount) => {
     let lastTime = p && p.last_interest_time ? Number(p.last_interest_time) : Date.now();
     let now = Date.now();
 
-    // 利息計算 (1時間ごとに0.5%複利)
+    // 利息計算 (1日ごとに0.5%複利)
     if (debt > 0) {
-        let hoursPassed = Math.floor((now - lastTime) / 3600000);
-        if (hoursPassed > 0) {
-            debt = Math.min(Math.floor(debt * Math.pow(1.005, hoursPassed)), 9999000);
-            lastTime = lastTime + (hoursPassed * 3600000);
+        let daysPassed = Math.floor((now - lastTime) / 86400000);
+        if (daysPassed > 0) {
+            debt = Math.min(Math.floor(debt * Math.pow(1.005, daysPassed)), 990000); // 最大99万
+            lastTime = lastTime + (daysPassed * 86400000);
         }
     } else {
         lastTime = now;
@@ -942,8 +942,9 @@ const resolveChouhan = async (roomId, mId) => {
     
     for (let player of game.players) {
         if (player.choice === result) { 
-            await addMoneyWithRepay(player.aid, player.bet * 2); 
-            msg += `(cracker) [piconname:${player.aid}]: 的中！ (+${formatNumber(player.bet * 2)} コイン)\n`; 
+            let winAmt = player.bet * 2;
+            await addMoneyWithRepay(player.aid, winAmt); 
+            msg += `(cracker) [piconname:${player.aid}]: 的中！ (+${formatNumber(winAmt)} コイン)\n`; 
         } else { 
             msg += `💀 [piconname:${player.aid}]: 予想[${player.choice === 'chou' ? '丁' : '半'}] ➡ はずれ (没収)\n`; 
         }
@@ -1135,7 +1136,7 @@ app.post('/webhook', (req, res) => {
             let { data: player } = await supabase.from('players').select('*').eq('account_id', senderId).single();
             
             if (!player) {
-                player = { account_id: senderId, money: 0, debt: 0, bank: 0, last_interest_time: Date.now(), slot_count: 0, work_limit: 5, msg_count: 1, job: 'サラリーマン' };
+                player = { account_id: senderId, money: 0, debt: 0, bank: 0, last_interest_time: Date.now(), slot_count: 0, work_limit: 5, msg_count: 1, job: 'サラリーマン', daily_give_amount: 0, last_give_date: today };
                 await supabase.from('players').insert(player);
             } else if (gambleActive && !body.startsWith('/')) {
                 let mc = (player.msg_count || 0) + 1; 
@@ -1152,10 +1153,10 @@ app.post('/webhook', (req, res) => {
             let myBank = player.bank || 0;
 
             if (myDebt > 0) {
-                let hoursPassed = Math.floor((now - lastTime) / 3600000);
-                if (hoursPassed > 0) {
-                    myDebt = Math.min(Math.floor(myDebt * Math.pow(1.005, hoursPassed)), 9999000);
-                    lastTime = lastTime + (hoursPassed * 3600000);
+                let daysPassed = Math.floor((now - lastTime) / 86400000); // 1日ごとに利息
+                if (daysPassed > 0) {
+                    myDebt = Math.min(Math.floor(myDebt * Math.pow(1.005, daysPassed)), 990000);
+                    lastTime = lastTime + (daysPassed * 86400000);
                     player.debt = myDebt;
                     player.last_interest_time = lastTime;
                     await supabase.from('players').update({ debt: myDebt, last_interest_time: lastTime }).eq('account_id', senderId);
@@ -1187,15 +1188,15 @@ app.post('/webhook', (req, res) => {
 
             // --- 📖 ヘルプコマンド ---
             if (body.trim() === '/help-gya') {
-                const helpMsg = `[info][title]🎰 カジノ＆ライフ 総合案内 (V45 Banking & LiveAction)[/title]
+                const helpMsg = `[info][title]🎰 カジノ＆ライフ 総合案内 (V46 Limit Update)[/title]
 【 🏦 銀行・借金 】
 /status : 状態確認(所持金, 預金, 借金, 純資産など)
 /deposit [金額|max|half] : 所持金を銀行へ預け入れる
-/withdraw [金額|max|half] : 銀行から引き出す (※借金がある場合は自動的に返済に充てられます)
-/debt [金額] : 借金する (上限999万。1時間ごとに0.5%の複利で増殖！)
+/withdraw [金額|max|half] : 銀行から引き出す (借金がある場合は自動返済)
+/debt [金額] : 借金する (上限99万。1日ごとに0.5%の複利で増殖！)
 /repay [金額|max|half] : 手動で借金を返済する
-/give [金額] : 相手に送金 (税金10%, 純資産の範囲内)
-/money-rank : 純資産(所持金+預金-借金)ランキング
+/give [金額] : 相手に送金 (税金10%, 1日最大50万まで)
+/money-rank : 純資産ランキング
 
 【 💼 職業・スキル 】
 /job : 転職と求人
@@ -1204,10 +1205,11 @@ app.post('/webhook', (req, res) => {
 /omikuji : 1日1回おみくじ (スロット確率変動)
 
 【 🎰 カジノ・宝くじ 】
-/slot [掛金|max|half] : スロット (1日5回)
+/slot [掛金|max|half] : スロット (最大ベット 999万)
 /buy-lot [連番|バラ] [枚数] : 宝くじ (最大1000枚)
 
 【 🎲 テーブルゲーム 】 (※詳しいルールは /help [ゲーム名] で確認)
+※1回のゲームの最大ベット額は 999万 までです。
 /chouhan : 丁半ゲーム募集
 /sicbo : シックボー募集 (/bet [額] [dai/shou/any])
 /cc : チンチロリン募集 (参加者は /roll)
@@ -1339,10 +1341,10 @@ app.post('/webhook', (req, res) => {
             if (debtMatch && gambleActive) {
                 let amt = parseInt(debtMatch[2], 10);
                 if (amt > 0) {
-                    if (myDebt + amt > 9999000) return sendTempMessage(roomId, `[info][title]⚠️ 借金上限エラー[/title]借金上限(9,999,000 コイン)を超過します！\n現在の借金: ${formatNumber(myDebt)} コイン[/info]`);
+                    if (myDebt + amt > 990000) return sendTempMessage(roomId, `[info][title]⚠️ 借金上限エラー[/title]借金上限(990,000 コイン)を超過します！\n現在の借金: ${formatNumber(myDebt)} コイン[/info]`);
                     
                     await supabase.from('players').update({ money: myMoney + amt, debt: myDebt + amt, last_interest_time: (myDebt === 0 ? Date.now() : player.last_interest_time) }).eq('account_id', senderId);
-                    return sendTempMessage(roomId, `[info][title]💳 お借り入れ完了[/title][piconname:${senderId}] 様\n${formatNumber(amt)} コインを借金しました。\n[hr]現在の借金: ${formatNumber(myDebt + amt)} コイン\n(※1時間ごとに0.5%の複利で利息が付きます)[/info]`);
+                    return sendTempMessage(roomId, `[info][title]💳 お借り入れ完了[/title][piconname:${senderId}] 様\n${formatNumber(amt)} コインを借金しました。\n[hr]現在の借金: ${formatNumber(myDebt + amt)} コイン\n(※1日ごとに0.5%の複利で利息が付きます)[/info]`);
                 }
             }
 
@@ -1355,10 +1357,20 @@ app.post('/webhook', (req, res) => {
                     if (netWorth < amt) return sendTempMessage(roomId, `[info][title]⚠️ 送金エラー[/title]${makeReplyTag(senderId, roomId, msgId)}\n純資産が不足しています！\n送金可能額は純資産分(${formatNumber(Math.max(0, netWorth))} コイン)までです。[/info]`);
                     if (myMoney < amt) return sendTempMessage(roomId, `[info]手持ちの所持金が不足しています。\n預金がある場合は /withdraw で手元に引き出してください。[/info]`);
                     
+                    let currentGiveAmount = (player.last_give_date === today) ? (player.daily_give_amount || 0) : 0;
+                    if (currentGiveAmount + amt > 500000) {
+                        return sendTempMessage(roomId, `[info][title]⚠️ 送金上限エラー[/title]1日の送金上限(500,000 コイン)を超過します！\n(本日は既に ${formatNumber(currentGiveAmount)} コイン送金しています)[/info]`);
+                    }
+                    
                     let tax = Math.floor(amt * 0.10); 
                     let rAmt = amt - tax;
                     
-                    await supabase.from('players').update({ money: myMoney - amt }).eq('account_id', senderId);
+                    await supabase.from('players').update({ 
+                        money: myMoney - amt,
+                        daily_give_amount: currentGiveAmount + amt,
+                        last_give_date: today
+                    }).eq('account_id', senderId);
+
                     await addMoneyWithRepay(targetAid, rAmt);
                     
                     return sendTempMessage(roomId, `[info][title]🎁 送金完了[/title][piconname:${senderId}] ➡ [piconname:${targetAid}]\n${formatNumber(amt)} コインを送金しました。\n[hr]※システム税 10% (${formatNumber(tax)} コイン) が引かれ、相手には ${formatNumber(rAmt)} コインが届きました。[/info]`);
@@ -1454,7 +1466,8 @@ app.post('/webhook', (req, res) => {
                 if (player.slot_count >= 5) return sendTempMessage(roomId, `[info]⚠️ ${makeReplyTag(senderId, roomId, msgId)}\n本日のスロットは上限(1日5回)に達しました！[/info]`);
                 if (Date.now() - Number(player.last_slot_time || 0) < 600000) return sendTempMessage(roomId, `[info]⚠️ ${makeReplyTag(senderId, roomId, msgId)}\nスロット休憩中(10分間隔)です！[/info]`);
                 
-                let bet = sM[2] === 'max' ? myMoney : (sM[2] === 'half' ? Math.floor(myMoney / 2) : parseInt(sM[2], 10));
+                let bet = sM[2] === 'max' ? Math.min(myMoney, 9990000) : (sM[2] === 'half' ? Math.floor(myMoney / 2) : parseInt(sM[2], 10));
+                if (bet > 9990000) return sendTempMessage(roomId, `[info]⚠️ 1回の最大ベット額は 9,990,000 コインまでです。[/info]`);
                 
                 if (bet > 0 && myMoney >= bet) {
                     await supabase.from('players').update({ money: myMoney - bet, slot_count: player.slot_count + 1, last_slot_time: Date.now() }).eq('account_id', senderId);
@@ -1593,7 +1606,9 @@ app.post('/webhook', (req, res) => {
             if (bM && gambleActive && gameState[roomId]?.state === 'BETTING') {
                 let pl = gameState[roomId].players.find(x => x.aid === senderId);
                 if (pl && pl.bet === 0) {
-                    let b = bM[2] === 'max' ? myMoney : (bM[2] === 'half' ? Math.floor(myMoney/2) : parseInt(bM[2], 10));
+                    let b = bM[2] === 'max' ? Math.min(myMoney, 9990000) : (bM[2] === 'half' ? Math.floor(myMoney/2) : parseInt(bM[2], 10));
+                    if (b > 9990000) return sendTempMessage(roomId, `[info]⚠️ 1回の最大ベット額は 9,990,000 コインまでです。[/info]`);
+
                     if (b > 0 && myMoney >= b) {
                         if (gameState[roomId].type === 'derby') {
                             let h = bM[3]; 
