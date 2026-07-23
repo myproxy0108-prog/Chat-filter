@@ -2018,7 +2018,22 @@ app.post('/webhook', (req, res) => {
                     return sendTempMessage(roomId, `[info][title]🎁 送金完了[/title][piconname:${senderId}] ➡ [piconname:${targetAid}]\n${formatNumber(amt)} コインを送金しました。\n[hr]※システム税 10% (${formatNumber(tax)} コイン) が引かれ、相手には ${formatNumber(rAmt)} コインが届きました。[/info]`);
                 }
             }
-
+　　　　　　if (/(^|\n)\/money-rank\b/.test(body)) {
+                const { data: eD } = await supabase.from('config').select('value').eq('key','rank_excluded').single(); 
+                let eI = eD ? JSON.parse(eD.value) : [];
+                const { data: ls } = await supabase.from('players').select('*'); 
+                let price = kabuData.price || 1000;
+                let f = ls ? ls.filter(d => !eI.includes(d.account_id)) : [];
+                
+                f.sort((a,b) => ((b.money||0) + (b.bank||0) + ((b.kabu_owned||0)*price)) - ((a.money||0) + (a.bank||0) + ((a.kabu_owned||0)*price)));
+                let s = f.slice(0, 10).map((d, i) => {
+                    let net = (d.money||0) + (d.bank||0) + ((d.kabu_owned||0)*price); 
+                    let md = i===0 ? "🥇" : (i===1 ? "🥈" : (i===2 ? "🥉" : "🔹")); 
+                    return `${md} ${i+1}位: [piconname:${d.account_id}]\n　💎 純資産: ${formatNumber(net)} コイン [${d.job||'サラリーマン'}]`;
+                }).join('\n[hr]');
+                
+                return sendTempMessage(roomId, `[info][title]👑 純資産ランキング TOP10[/title]${s}\n[hr]※5分後に自動消滅します[/info]`, 300000);
+            }
             if (/(^|\n)\/status\b/.test(body)) {
                 const remSlot = Math.max(0, 5 - player.slot_count);
                 const bStr = `\n🏦 預金残高: ${formatNumber(myBank)} コイン`;
