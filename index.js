@@ -2035,17 +2035,41 @@ app.post('/webhook', (req, res) => {
                 return sendTempMessage(roomId, `[info][title]👑 純資産ランキング TOP10[/title]${s}\n[hr]※5分後に自動消滅します[/info]`, 300000);
             }
             if (/(^|\n)\/status\b/.test(body)) {
-                const remSlot = Math.max(0, 5 - player.slot_count);
-                const bStr = `\n🏦 預金残高: ${formatNumber(myBank)} コイン`;
-                const streakStr = `\n🔥 連勝記録: ${player.win_streak || 0} 連勝`;
-                const kabuStr = player.kabu_owned > 0 ? `\n📦 保有株: ${player.kabu_owned} 株` : '';
-                const netWorth = myMoney + myBank + (player.kabu_owned * kabuData.price);
+                let targetPlayer = player;
+                let targetAid = senderId;
+                
+                // 返信先がある場合は、その人のデータをDBから取得する
+                if (repliedAid) {
+                    const { data: repPlayer } = await supabase.from('players').select('*').eq('account_id', repliedAid).single();
+                    if (repPlayer) {
+                        targetPlayer = repPlayer;
+                        targetAid = repliedAid;
+                    } else {
+                        return sendTempMessage(roomId, `[info]⚠️ 対象のプレイヤーデータが見つかりません。[/info]`);
+                    }
+                }
 
-                let wr = player.plays ? ((player.wins / player.plays) * 100).toFixed(1) : 0;
-                let rtp = player.total_bet ? ((player.total_return / player.total_bet) * 100).toFixed(1) : 0;
-                const statsStr = `\n⚔️ 戦績: ${player.plays||0}戦 / ${player.wins||0}勝 / ${player.loses||0}敗\n📈 勝率: ${wr}% / 💹 RTP: ${rtp}%`;
+                let tMoney = targetPlayer.money || 0;
+                let tBank = targetPlayer.bank || 0;
+                let tJob = targetPlayer.job || 'サラリーマン';
+                let tKabu = targetPlayer.kabu_owned || 0;
+                let tPlays = targetPlayer.plays || 0;
+                let tWins = targetPlayer.wins || 0;
+                let tLoses = targetPlayer.loses || 0;
+                let tTotalBet = targetPlayer.total_bet || 0;
+                let tTotalReturn = targetPlayer.total_return || 0;
 
-                return sendTempMessage(roomId, `[info][title]📊 プレイヤー情報[/title][piconname:${senderId}] 様\n\n💰 所持金: ${formatNumber(myMoney)} コイン${bStr}${kabuStr}\n💎 純資産: ${formatNumber(netWorth)} コイン${streakStr}${statsStr}\n[hr]👔 職業: ${myJob}\n🎰 スロット残り: ${remSlot} 回\n💼 お仕事残り: ${player.work_limit} 回\n⛩️ 今日の運勢: ${player.omikuji_result || '未引'}\n[hr]※1分後に自動消去されます[/info]`);
+                const remSlot = Math.max(0, 5 - (targetPlayer.slot_count || 0));
+                const bStr = `\n🏦 預金残高: ${formatNumber(tBank)} コイン`;
+                const streakStr = `\n🔥 連勝記録: ${targetPlayer.win_streak || 0} 連勝`;
+                const kabuStr = tKabu > 0 ? `\n📦 保有株: ${tKabu} 株` : '';
+                const netWorth = tMoney + tBank + (tKabu * kabuData.price);
+
+                let wr = tPlays ? ((tWins / tPlays) * 100).toFixed(1) : 0;
+                let rtp = tTotalBet ? ((tTotalReturn / tTotalBet) * 100).toFixed(1) : 0;
+                const statsStr = `\n⚔️ 戦績: ${tPlays}戦 / ${tWins}勝 / ${tLoses}敗\n📈 勝率: ${wr}% / 💹 RTP: ${rtp}%`;
+
+                return sendTempMessage(roomId, `[info][title]📊 プレイヤー情報[/title][piconname:${targetAid}] 様\n\n💰 所持金: ${formatNumber(tMoney)} コイン${bStr}${kabuStr}\n💎 純資産: ${formatNumber(netWorth)} コイン${streakStr}${statsStr}\n[hr]👔 職業: ${tJob}\n🎰 スロット残り: ${remSlot} 回\n💼 お仕事残り: ${targetPlayer.work_limit || 0} 回\n⛩️ 今日の運勢: ${targetPlayer.omikuji_result || '未引'}\n[hr]※1分後に自動消去されます[/info]`);
             }
 // --- Part 1 ここまで ---
 
