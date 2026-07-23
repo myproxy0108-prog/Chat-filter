@@ -1466,7 +1466,7 @@ app.post('/webhook', (req, res) => {
             }
 // --- 前半ここまで ---
 
-2️⃣ 後半のコード
+
 
 // --- 後半ここから ---
             if ((body.trim() === '/chou' || body.trim() === '/han') && gambleActive && gameState[roomId]?.type === 'chouhan' && gameState[roomId].state === 'ACTION') {
