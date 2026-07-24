@@ -1,4 +1,5 @@
 
+
 const express = require('express');
 const crypto = require('crypto');
 const axios = require('axios');
@@ -106,7 +107,7 @@ const addMoney = async (accountId, amount) => {
     } else {
         await supabase.from('players').insert({ 
             account_id: accountId, money: money, bank: bank, debt: 0, 
-            slot_count: 0, work_limit: 5, msg_count: 0, job: 'サラリーマン', 
+            slot_count: 0, work_limit: 10, msg_count: 0, job: 'サラリーマン', 
             win_streak: 0, life_bet_unlocked: false, kabu_owned: kabu_owned,
             plays: 0, wins: 0, loses: 0, total_bet: 0, total_return: 0, russian_trauma_time: rtt
         });
@@ -1781,7 +1782,7 @@ app.post('/webhook', (req, res) => {
             if (localLastResetDate !== today) {
                 const { data: configDate } = await supabase.from('config').select('value').eq('key', 'last_reset_date').single();
                 if (!configDate || configDate.value !== today) {
-                    await supabase.from('players').update({ slot_count: 0, work_limit: 5, work_date: null, skill_date: null, omikuji_date: null }).neq('account_id', '0');
+                    await supabase.from('players').update({ slot_count: 0, work_limit: 10, work_date: null, skill_date: null, omikuji_date: null }).neq('account_id', '0');
                     await supabase.from('config').upsert({ key: 'last_reset_date', value: today });
                     localLastResetDate = today;
                 }
@@ -1789,14 +1790,12 @@ app.post('/webhook', (req, res) => {
 
             let { data: player } = await supabase.from('players').select('*').eq('account_id', senderId).single();
             if (!player) {
-                player = { account_id: senderId, money: 0, bank: 0, debt: 0, last_interest_time: Date.now(), slot_count: 0, work_limit: 5, msg_count: 1, job: 'サラリーマン', daily_give_amount: 0, last_give_date: today, win_streak: 0, life_bet_unlocked: false, kabu_owned: 0, plays: 0, wins: 0, loses: 0, total_bet: 0, total_return: 0, russian_trauma_time: 0, last_daily_date: null };
+                player = { account_id: senderId, money: 0, bank: 0, debt: 0, last_interest_time: Date.now(), slot_count: 0, work_limit: 10, msg_count: 1, job: 'サラリーマン', daily_give_amount: 0, last_give_date: today, win_streak: 0, life_bet_unlocked: false, kabu_owned: 0, plays: 0, wins: 0, loses: 0, total_bet: 0, total_return: 0, russian_trauma_time: 0, last_daily_date: null };
                 await supabase.from('players').insert(player);
             } else if (gambleActive && !body.startsWith('/')) {
                 let mc = (player.msg_count || 0) + 1; 
-                let wl = player.work_limit || 5;
-                if (mc >= (Math.floor(Math.random() * 51) + 100)) { mc = 0; if (wl < 10) wl++; }
-                player.msg_count = mc; player.work_limit = wl;
-                await supabase.from('players').update({ msg_count: mc, work_limit: wl }).eq('account_id', senderId);
+                player.msg_count = mc;
+                await supabase.from('players').update({ msg_count: mc }).eq('account_id', senderId);
             }
 
             if (player && player.last_daily_date !== today) {
@@ -1820,6 +1819,25 @@ app.post('/webhook', (req, res) => {
                 if (remTrauma > 0) {
                     return sendTempMessage(roomId, `[info]⚠️ [piconname:${senderId}]\nロシアンルーレットの恐怖で手が震え、ゲームに参加できない…\n(残り ${remTrauma} 秒)[/info]`);
                 }
+            }
+
+            // --- おみくじ機能 ---
+            if (/(^|\n)\/omikuji\b/.test(body) && gambleActive) {
+                if (player.omikuji_date === today) {
+                    return sendTempMessage(roomId, `[info]⛩️ ${makeReplyTag(senderId, roomId, msgId)}\n本日のおみくじは既に引いています。\n結果: 【 ${player.omikuji_result || '不明'} 】\n(明日また引いてください)[/info]`);
+                }
+                const r = Math.random();
+                let res = '吉';
+                if (r < 0.1) res = '大吉';
+                else if (r < 0.3) res = '中吉';
+                else if (r < 0.6) res = '吉';
+                else if (r < 0.8) res = '小吉';
+                else if (r < 0.95) res = '末吉';
+                else if (r < 0.98) res = '凶';
+                else res = '大凶';
+
+                await supabase.from('players').update({ omikuji_date: today, omikuji_result: res }).eq('account_id', senderId);
+                return sendTempMessage(roomId, `[info][title]⛩️ おみくじ結果[/title][piconname:${senderId}]\nガシャガシャ... ポロッ\n\nあなたの今日の運勢は【 ${res} 】です！\n(スロットの確率に影響します)[/info]`);
             }
 
             // --- 株機能 ---
@@ -1916,7 +1934,7 @@ app.post('/webhook', (req, res) => {
 
 【 💼 職業・スキル 】
 /job : 転職と求人
-/work : 職業給料 (1分に1回, 1日5回上限)
+/work : 職業給料 (1分に1回, 1日10回上限)
 /catch または /goal : 職業専用能力
 /slot-add : [賭博師] 1日1回、スロット回数追加
 /owner : [ギャンブルオーナー] 30分間、他人の負け金回収
@@ -2149,7 +2167,7 @@ app.post('/webhook', (req, res) => {
             }
 
             if (/(^|\n)\/work\b/.test(body) && gambleActive) {
-                if (player.work_limit <= 0) return sendTempMessage(roomId, `[info]⚠️ ${makeReplyTag(senderId, roomId, msgId)}\n本日の仕事回数が上限(5回)に達しました。[/info]`);
+                if (player.work_limit <= 0) return sendTempMessage(roomId, `[info]⚠️ ${makeReplyTag(senderId, roomId, msgId)}\n本日の仕事回数が上限(10回)に達しました。[/info]`);
                 if (Date.now() - (player.last_work_time || 0) < 60000) return sendTempMessage(roomId, `[info]⚠️ ${makeReplyTag(senderId, roomId, msgId)}\n休憩中です！仕事は1分間隔で行えます。[/info]`);
                 
                 let e = 0, m = "";
@@ -2623,4 +2641,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Run ${PORT}`));
 
 module.exports = app;
-
