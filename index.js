@@ -1,6 +1,3 @@
-
-完全版コード (app.js または index.js)
-
 const express = require('express');
 const crypto = require('crypto');
 const axios = require('axios');
