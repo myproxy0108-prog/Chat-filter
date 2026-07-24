@@ -520,8 +520,6 @@ const handleGameTimeout = async (roomId) => {
                 let winner = game.players[winnerIdx];
                 let totalPot = game.players[0].bet + game.players[1].bet;
                 
-                await processOwnerSkill(player.aid, player.bet, roomId);
-
                 await addMoney(winner.aid, totalPot);
                 await updatePlayerStats(winner.aid, winner.bet, totalPot, 'win');
                 await updatePlayerStats(player.aid, player.bet, 0, 'lose');
@@ -1227,7 +1225,8 @@ const processLifeBetResult = async (player, isWin, isDraw, roomId, multOverride 
         await updateRoomMembers(roomId, [player.aid], 'readonly');
         resTxt = `💀 命賭け失敗... 永久出禁処分`;
         resType = 'lose';
-        await processOwnerSkill(player.aid, betAmt, roomId);
+        let g = gameState[roomId];
+        if (g && g.type !== 'russian') await processOwnerSkill(player.aid, betAmt, roomId);
     }
     
     await updatePlayerStats(player.aid, betAmt, winAmt, resType);
@@ -1914,22 +1913,7 @@ app.post('/webhook', (req, res) => {
                         futureMsg = `次の壺の中身は【 ${dice[0]} と ${dice[1]} 】のようです...`;
                     } else return sendTempMessage(roomId, `[info]⚠️ ベット中に使用してください。[/info]`);
                 } else if (g.type === 'derby') {
-                    if (g.state === 'BETTING') {
-                        if (!g.futureResult) {
-                            let ws = [...g.st], tW = ws.reduce((a,b)=>a+b,0);
-                            let r1=Math.random()*tW, s1=0, f=1; for(let i=0;i<6;i++){ s1+=ws[i]; if(r1<=s1){f=i+1;break;} }
-                            ws[f-1]=0; tW = ws.reduce((a,b)=>a+b,0);
-                            let r2=Math.random()*tW, s2=0, s=1; for(let i=0;i<6;i++){ s2+=ws[i]; if(r2<=s2){s=i+1;break;} }
-                            g.futureResult = f < s ? `${f}-${s}` : `${s}-${f}`;
-                        }
-                        let res = g.futureResult;
-                        if (!isTrue) {
-                            let f=Math.floor(Math.random()*6)+1, s=Math.floor(Math.random()*6)+1;
-                            while(f===s) s=Math.floor(Math.random()*6)+1;
-                            res = f < s ? `${f}-${s}` : `${s}-${f}`;
-                        }
-                        futureMsg = `次に入賞する馬連は【 ${res} 】のようです...`;
-                    } else return sendTempMessage(roomId, `[info]⚠️ ベット中に使用してください。[/info]`);
+                    return sendTempMessage(roomId, `[info]⚠️ 競馬(ダービー)の未来は不確定要素が多すぎて視えません。[/info]`);
                 } else if (g.type === 'cc') {
                     if (g.state === 'BETTING') {
                         if (!g.botRoll) g.botRoll = generateChinchiroRoll();
@@ -2537,8 +2521,6 @@ app.post('/webhook', (req, res) => {
                         let winnerIdx = g.turnIndex === 0 ? 1 : 0;
                         let winner = g.players[winnerIdx];
                         let totalPot = g.players[0].bet + g.players[1].bet;
-                        
-                        await processOwnerSkill(pl.aid, pl.bet, roomId);
 
                         await addMoney(winner.aid, totalPot);
                         await updatePlayerStats(winner.aid, winner.bet, totalPot, 'win');
