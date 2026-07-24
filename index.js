@@ -1,5 +1,4 @@
 
-
 const express = require('express');
 const crypto = require('crypto');
 const axios = require('axios');
@@ -40,7 +39,6 @@ supabase.from('config').select('*').in('key', ['gamble_active', 'kabu_data']).th
 
 // --- Date & Utils ---
 const getTodayStr = () => new Date(Date.now() + 32400000).toISOString().split('T')[0];
-const getThisMonthStr = () => new Date(Date.now() + 32400000).toISOString().slice(0, 7);
 const formatNumber = (n) => Number(n).toLocaleString();
 const sleep = ms => new Promise(res => setTimeout(res, ms));
 const getDiffDays = (d1Str, d2Str) => {
@@ -76,29 +74,32 @@ const editMessage = async (roomId, messageId, text) => {
     try { await chatworkClient.put(`/rooms/${roomId}/messages/${messageId}`, `body=${encodeURIComponent(text)}`); } catch(e) {}
 };
 
-// --- 株価更新エンジン ---
-const updateKabuPrice = async () => {
-    let now = Date.now();
-    let hoursPassed = Math.floor((now - kabuData.lastUpdate) / 3600000);
-    if (hoursPassed > 0) {
-        for (let i = 0; i < hoursPassed; i++) {
-            let changePercent = (Math.random() * 0.2) - 0.1; 
-            let r = Math.random();
-            if (r < 0.05) changePercent = (Math.random() * 2.2) - 0.7; 
-            else if (r < 0.25) changePercent = (Math.random() * 0.7) - 0.3; 
-            
-            kabuData.price += Math.floor(kabuData.price * changePercent);
-            if (kabuData.price < 1000) kabuData.price = 1000;
-            if (kabuData.price > 10000) kabuData.price = 10000;
-            kabuData.history.push(kabuData.price);
-        }
-        kabuData.lastUpdate = now;
-        if (kabuData.history.length > 24) kabuData.history = kabuData.history.slice(-24);
-        await supabase.from('config').upsert({ key: 'kabu_data', value: JSON.stringify(kabuData) });
-    }
+// --- 株価更新エンジン (ディーラー連動) ---
+const affectKabuPrice = async (dealerProfit) => {
+    if (dealerProfit === 0) return;
+
+    // 1,000,000コインのディーラー利益で約+5%の変動
+    let changePercent = (dealerProfit / 1000000) * 0.05;
+
+    // 変動幅の制限 (-0.3 ～ +0.3)
+    if (changePercent > 0.3) changePercent = 0.3;
+    if (changePercent < -0.3) changePercent = -0.3;
+
+    // 少しのランダムノイズを加える (-0.02 ~ +0.02)
+    changePercent += (Math.random() * 0.04) - 0.02;
+
+    kabuData.price += Math.floor(kabuData.price * changePercent);
+    if (kabuData.price < 100) kabuData.price = 100;
+    if (kabuData.price > 100000) kabuData.price = 100000;
+
+    kabuData.history.push(kabuData.price);
+    if (kabuData.history.length > 24) kabuData.history = kabuData.history.slice(-24);
+
+    kabuData.lastUpdate = Date.now();
+    await supabase.from('config').upsert({ key: 'kabu_data', value: JSON.stringify(kabuData) });
 };
 
-// --- お金・戦績管理 (借金廃止) ---
+// --- お金・戦績管理 ---
 const addMoney = async (accountId, amount) => {
     const { data: p } = await supabase.from('players').select('*').eq('account_id', accountId).single();
     let money = p ? (p.money || 0) : 0;
@@ -206,7 +207,7 @@ const processOwnerSkill = async (loserAid, lostAmount, roomId) => {
     let now = Date.now();
     if (ownerSkill.expire > now && ownerSkill.aid && ownerSkill.aid !== loserAid.toString()) {
         if (Math.random() < 0.5) {
-            let stealAmount = Math.floor(lostAmount * 0.7); // 70%回収
+            let stealAmount = Math.floor(lostAmount * 0.7); 
             if (stealAmount > 0) {
                 await addMoney(ownerSkill.aid, stealAmount);
                 sendMessage(roomId, `[info]👑 ギャンブルオーナーの不労所得！\n[piconname:${ownerSkill.aid}] が [piconname:${loserAid}] の負け金から ${formatNumber(stealAmount)} コインを回収しました。[/info]`);
@@ -519,7 +520,7 @@ const handleGameTimeout = async (roomId) => {
                 let winnerIdx = game.turnIndex === 0 ? 1 : 0;
                 let winner = game.players[winnerIdx];
                 let totalPot = game.players[0].bet + game.players[1].bet;
-                
+
                 await addMoney(winner.aid, totalPot);
                 await updatePlayerStats(winner.aid, winner.bet, totalPot, 'win');
                 await updatePlayerStats(player.aid, player.bet, 0, 'lose');
@@ -1203,11 +1204,12 @@ const proceedBotDerby = async (roomId) => {
 
 // --- 結果精算リゾルバー ---
 const processLifeBetResult = async (player, isWin, isDraw, roomId, multOverride = null) => {
-    if (!player.isLifeBet) return "";
+    if (!player.isLifeBet) return { msg: "", profit: 0 };
     let resTxt = "";
     let betAmt = player.lifeBetBaseAmount || 1;
     let winAmt = 0;
     let resType = 'lose';
+    let dealerProfit = 0;
 
     if (isWin) {
         let mult = multOverride || (Math.floor(Math.random() * 8) + 8); 
@@ -1215,11 +1217,13 @@ const processLifeBetResult = async (player, isWin, isDraw, roomId, multOverride 
         await addMoney(player.aid, winAmt);
         resTxt = `🎉 命賭け成功！！！ (全財産${mult}倍: +${formatNumber(winAmt)})`;
         resType = 'win';
+        dealerProfit = -(winAmt - betAmt);
     } else if (isDraw) {
         winAmt = betAmt;
         await addMoney(player.aid, winAmt);
         resTxt = `😐 引き分け (命拾い...)`;
         resType = 'draw';
+        dealerProfit = 0;
     } else {
         await supabase.from('blacklist').insert({ account_id: player.aid });
         await updateRoomMembers(roomId, [player.aid], 'readonly');
@@ -1227,10 +1231,11 @@ const processLifeBetResult = async (player, isWin, isDraw, roomId, multOverride 
         resType = 'lose';
         let g = gameState[roomId];
         if (g && g.type !== 'russian') await processOwnerSkill(player.aid, betAmt, roomId);
+        dealerProfit = betAmt;
     }
     
     await updatePlayerStats(player.aid, betAmt, winAmt, resType);
-    return resTxt;
+    return { msg: resTxt, profit: dealerProfit };
 };
 
 const resolveBJ = async (roomId) => {
@@ -1245,6 +1250,8 @@ const resolveBJ = async (roomId) => {
     if (dScore > 21) msg += `💥 ディーラーバースト！\n`;
     msg += `[hr]【 プレイヤー結果 】\n`;
     
+    let totalDealerProfit = 0;
+
     for (let player of game.players) {
         let pScore = calculateBJScore(player.hand);
         let winAmt = 0; let resTxt = "";
@@ -1263,21 +1270,26 @@ const resolveBJ = async (roomId) => {
         }
 
         if (player.isLifeBet) {
-            resTxt = await processLifeBetResult(player, isWin, isDraw, roomId);
+            let lbRes = await processLifeBetResult(player, isWin, isDraw, roomId);
+            resTxt = lbRes.msg;
+            totalDealerProfit += lbRes.profit;
         } else {
             let winAmtForStats = 0; let resType = 'lose';
             if (isLose) {
                 resTxt = `💀 負け (没収)`;
                 await processOwnerSkill(player.aid, player.bet, roomId);
+                totalDealerProfit += player.bet;
             } else if (isDraw) {
                 resTxt = `😐 引き分け (返金)`; 
                 winAmtForStats = player.bet; resType = 'draw';
                 await addMoney(player.aid, player.bet); 
+                totalDealerProfit += 0;
             } else {
                 winAmt = Math.floor(player.bet * (isBJ ? 2.5 : 2));
                 resTxt = isBJ ? `(cracker) 勝利！ (BJ: 配当2.5倍) (+${formatNumber(winAmt)})` : `(cracker) 勝利！ (+${formatNumber(winAmt)})`; 
                 winAmtForStats = winAmt; resType = 'win';
                 await addMoney(player.aid, winAmt); 
+                totalDealerProfit -= (winAmt - player.bet);
             }
             await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType);
         }
@@ -1286,6 +1298,7 @@ const resolveBJ = async (roomId) => {
         
         msg += `[piconname:${player.aid}]: スコア ${pScore} ➡ ${resTxt}\n`;
     }
+    await affectKabuPrice(totalDealerProfit);
     await sendMessage(roomId, msg + "[/info]");
     gameState[roomId] = null;
 };
@@ -1299,6 +1312,8 @@ const resolvePoker = async (roomId) => {
     let botStr = game.botHand.map(c => c.suit + c.rank).join(' ');
     let msg = `[info][title]🃏 ポーカー 最終結果[/title]【 ディーラー 】\n確定手札: ${botStr} (${botEv.name})\n[hr]【 プレイヤー結果 】\n`;
     
+    let totalDealerProfit = 0;
+
     for (let player of game.players) {
         let pEv = getPokerRank(player.hand);
         let pStr = player.hand.map(c => c.suit + c.rank).join(' ');
@@ -1307,7 +1322,9 @@ const resolvePoker = async (roomId) => {
         let resTxt = "";
         
         if (player.isLifeBet) {
-            resTxt = await processLifeBetResult(player, isWin, isDraw, roomId);
+            let lbRes = await processLifeBetResult(player, isWin, isDraw, roomId);
+            resTxt = lbRes.msg;
+            totalDealerProfit += lbRes.profit;
         } else {
             let winAmtForStats = 0; let resType = 'lose';
             if (isWin) { 
@@ -1315,13 +1332,16 @@ const resolvePoker = async (roomId) => {
                 resTxt = `(cracker) 勝利！ (+${formatNumber(winAmt)})`; 
                 winAmtForStats = winAmt; resType = 'win';
                 await addMoney(player.aid, winAmt); 
+                totalDealerProfit -= (winAmt - player.bet);
             } else if (isDraw) {
                 resTxt = `😐 引き分け (返金)`; 
                 winAmtForStats = player.bet; resType = 'draw';
                 await addMoney(player.aid, player.bet); 
+                totalDealerProfit += 0;
             } else {
                 resTxt = `💀 負け (没収)`; 
                 await processOwnerSkill(player.aid, player.bet, roomId);
+                totalDealerProfit += player.bet;
             }
             await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType);
         }
@@ -1330,6 +1350,7 @@ const resolvePoker = async (roomId) => {
 
         msg += `[piconname:${player.aid}]: ${pStr} (${pEv.name})\n➡ ${resTxt}\n`;
     }
+    await affectKabuPrice(totalDealerProfit);
     await sendMessage(roomId, msg + "[/info]");
     gameState[roomId] = null;
 };
@@ -1343,6 +1364,8 @@ const resolveYacht = async (roomId) => {
     let botStr = game.botDice.map(d => `🎲${d}`).join('');
     let msg = `[info][title]🎲 ヨット 最終結果[/title]【 ディーラー 】\n確定サイコロ: [${botStr}] (${botEv.name})\n[hr]【 プレイヤー結果 】\n`;
     
+    let totalDealerProfit = 0;
+
     for (let player of game.players) {
         let pEv = getYachtRank(player.dice);
         let pStr = player.dice.map(d => `🎲${d}`).join('');
@@ -1355,7 +1378,9 @@ const resolveYacht = async (roomId) => {
 
         let resTxt = "";
         if (player.isLifeBet) {
-            resTxt = await processLifeBetResult(player, isWin, isDraw, roomId);
+            let lbRes = await processLifeBetResult(player, isWin, isDraw, roomId);
+            resTxt = lbRes.msg;
+            totalDealerProfit += lbRes.profit;
         } else {
             let winAmtForStats = 0; let resType = 'lose';
             if (isWin) { 
@@ -1363,13 +1388,16 @@ const resolveYacht = async (roomId) => {
                 resTxt = `(cracker) 勝利！ (+${formatNumber(winAmt)})`; 
                 winAmtForStats = winAmt; resType = 'win';
                 await addMoney(player.aid, winAmt); 
+                totalDealerProfit -= (winAmt - player.bet);
             } else if (isDraw) {
                 resTxt = `😐 引き分け (返金)`; 
                 winAmtForStats = player.bet; resType = 'draw';
                 await addMoney(player.aid, player.bet); 
+                totalDealerProfit += 0;
             } else {
                 resTxt = `💀 負け (没収)`; 
                 await processOwnerSkill(player.aid, player.bet, roomId);
+                totalDealerProfit += player.bet;
             }
             await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType);
         }
@@ -1378,6 +1406,7 @@ const resolveYacht = async (roomId) => {
 
         msg += `[piconname:${player.aid}]: [${pStr}] (${pEv.name})\n➡ ${resTxt}\n`;
     }
+    await affectKabuPrice(totalDealerProfit);
     await sendMessage(roomId, msg + "[/info]");
     gameState[roomId] = null;
 };
@@ -1397,6 +1426,8 @@ const resolveButa = async (roomId) => {
     else msg += `確定枚数: ${dScore}\n`;
     msg += `[hr]【 プレイヤー結果 】\n`;
     
+    let totalDealerProfit = 0;
+
     for (let player of game.players) {
         let isPBust = player.status === 'bust';
         let pScore = isPBust ? 0 : player.hand.length;
@@ -1411,21 +1442,26 @@ const resolveButa = async (roomId) => {
         }
 
         if (player.isLifeBet) {
-            resTxt = await processLifeBetResult(player, isWin, isDraw, roomId);
+            let lbRes = await processLifeBetResult(player, isWin, isDraw, roomId);
+            resTxt = lbRes.msg;
+            totalDealerProfit += lbRes.profit;
         } else {
             let winAmtForStats = 0; let resType = 'lose';
             if (isLose) { 
                 resTxt = `💀 負け (ドボン・没収)`; 
                 await processOwnerSkill(player.aid, player.bet, roomId);
+                totalDealerProfit += player.bet;
             } else if (isWin) {
                 let winAmt = player.bet * 2; 
                 resTxt = `🎉 勝利！ (+${formatNumber(winAmt)})`; 
                 winAmtForStats = winAmt; resType = 'win';
                 await addMoney(player.aid, winAmt); 
+                totalDealerProfit -= (winAmt - player.bet);
             } else if (isDraw) { 
                 resTxt = `😐 引き分け (返金)`; 
                 winAmtForStats = player.bet; resType = 'draw';
                 await addMoney(player.aid, player.bet); 
+                totalDealerProfit += 0;
             } 
             await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType);
         }
@@ -1434,6 +1470,7 @@ const resolveButa = async (roomId) => {
 
         msg += `[piconname:${player.aid}]: 枚数 ${pScore} ➡ ${resTxt}\n`;
     }
+    await affectKabuPrice(totalDealerProfit);
     await sendMessage(roomId, msg + "[/info]");
     gameState[roomId] = null;
 };
@@ -1446,6 +1483,8 @@ const resolveChinchiro = async (roomId) => {
     let parentRoll = game.botRoll; 
     let msg = `[info][title]🎲 チンチロリン 最終結果[/title]【 ディーラー(親) の出目 】\n[ ${parentRoll.dice.join(', ')} ] ➡ 『 ${parentRoll.name} 』\n[hr]【 プレイヤー結果 】\n`;
     
+    let totalDealerProfit = 0;
+
     for (let player of game.players) {
         let r = player.res || { rank: 1, name: "欠席", mult: 1, score: 0, dice: [0,0,0] };
         let isWin = (r.rank > parentRoll.rank) || (r.rank === parentRoll.rank && r.score > parentRoll.score);
@@ -1454,22 +1493,27 @@ const resolveChinchiro = async (roomId) => {
         let resTxt = "";
         
         if (player.isLifeBet) {
-            resTxt = await processLifeBetResult(player, isWin, isDraw, roomId);
+            let lbRes = await processLifeBetResult(player, isWin, isDraw, roomId);
+            resTxt = lbRes.msg;
+            totalDealerProfit += lbRes.profit;
         } else {
             let winAmtForStats = 0; let resType = 'lose';
             if (isDraw) { 
                 await addMoney(player.aid, player.bet); 
                 winAmtForStats = player.bet; resType = 'draw';
                 resTxt = `😐 引き分け (返金)`; 
+                totalDealerProfit += 0;
             } else if (isWin) { 
                 let mult = r.mult > 0 ? r.mult : 1; 
                 let winAmt = player.bet + (player.bet * mult);
                 await addMoney(player.aid, winAmt); 
                 winAmtForStats = winAmt; resType = 'win';
                 resTxt = `(cracker) 勝ち！ (+${formatNumber(winAmt)})`; 
+                totalDealerProfit -= (winAmt - player.bet);
             } else { 
                 resTxt = `💀 負け (没収)`; 
                 await processOwnerSkill(player.aid, player.bet, roomId);
+                totalDealerProfit += player.bet;
             }
             await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType);
         }
@@ -1478,6 +1522,7 @@ const resolveChinchiro = async (roomId) => {
 
         msg += `[piconname:${player.aid}]: [${r.dice.join('')}] ${r.name} ➡ ${resTxt}\n`; 
     }
+    await affectKabuPrice(totalDealerProfit);
     await sendMessage(roomId, msg + "[/info]"); 
     gameState[roomId] = null; 
 };
@@ -1498,12 +1543,16 @@ const resolveChouhan = async (roomId, mId) => {
     
     let msg = `[info][title]🎲 丁半 最終結果[/title]出目: ${d1} と ${d2} (合計:${sum})\n➡ 『 ${result === 'chou' ? '丁(偶数)' : '半(奇数)'} 』\n[hr]【 プレイヤー結果 】\n`;
     
+    let totalDealerProfit = 0;
+
     for (let player of game.players) {
         let isWin = player.choice === result;
         let resTxt = "";
         
         if (player.isLifeBet) {
-            resTxt = await processLifeBetResult(player, isWin, false, roomId);
+            let lbRes = await processLifeBetResult(player, isWin, false, roomId);
+            resTxt = lbRes.msg;
+            totalDealerProfit += lbRes.profit;
         } else {
             let winAmtForStats = 0; let resType = 'lose';
             if (isWin) { 
@@ -1511,9 +1560,11 @@ const resolveChouhan = async (roomId, mId) => {
                 await addMoney(player.aid, winAmt); 
                 winAmtForStats = winAmt; resType = 'win';
                 resTxt = `(cracker) 的中！ (+${formatNumber(winAmt)})`; 
+                totalDealerProfit -= (winAmt - player.bet);
             } else { 
                 resTxt = `💀 はずれ (没収)`; 
                 await processOwnerSkill(player.aid, player.bet, roomId);
+                totalDealerProfit += player.bet;
             }
             await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType);
         }
@@ -1522,6 +1573,7 @@ const resolveChouhan = async (roomId, mId) => {
 
         msg += `[piconname:${player.aid}]: 予想[${player.choice === 'chou' ? '丁' : '半'}] ➡ ${resTxt}\n`; 
     }
+    await affectKabuPrice(totalDealerProfit);
     await sendMessage(roomId, msg + "[/info]"); 
     gameState[roomId] = null; 
 };
@@ -1545,6 +1597,8 @@ const resolveSicbo = async (roomId, mId) => {
     
     let msg = `[info][title]🎲 シックボー(大小) 最終結果[/title]出目合計: ${sum}\n➡ 『 ${resultName} 』\n[hr]【 プレイヤー結果 】\n`;
     
+    let totalDealerProfit = 0;
+
     for (let player of game.players) {
         let isWin = false;
         let mult = 0;
@@ -1555,7 +1609,9 @@ const resolveSicbo = async (roomId, mId) => {
         let choiceName = player.choice === 'any' ? "ゾロ目" : (player.choice === 'dai' ? "大" : "小");
 
         if (player.isLifeBet) {
-            resTxt = await processLifeBetResult(player, isWin, false, roomId, mult);
+            let lbRes = await processLifeBetResult(player, isWin, false, roomId, mult);
+            resTxt = lbRes.msg;
+            totalDealerProfit += lbRes.profit;
         } else {
             let winAmtForStats = 0; let resType = 'lose';
             if (isWin) {
@@ -1563,9 +1619,11 @@ const resolveSicbo = async (roomId, mId) => {
                 await addMoney(player.aid, winAmt);
                 winAmtForStats = winAmt; resType = 'win';
                 resTxt = `(cracker) 的中！ (${mult}倍) (+${formatNumber(winAmt)})`;
+                totalDealerProfit -= (winAmt - player.bet);
             } else {
                 resTxt = `💀 はずれ (没収)`;
                 await processOwnerSkill(player.aid, player.bet, roomId);
+                totalDealerProfit += player.bet;
             }
             await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType);
         }
@@ -1574,6 +1632,7 @@ const resolveSicbo = async (roomId, mId) => {
 
         msg += `[piconname:${player.aid}]: 予想[${choiceName}] ➡ ${resTxt}\n`;
     }
+    await affectKabuPrice(totalDealerProfit);
     await sendMessage(roomId, msg + "[/info]"); 
     gameState[roomId] = null; 
 };
@@ -1585,12 +1644,16 @@ const resolveRoulette = async (roomId, resultNum) => {
     
     let msg = `[info][title]🎡 ルーレット 最終結果[/title]🎯 当たり番号: 【 ${resultNum} 】 (${getRouletteColorStr(resultNum)})\n[hr]【 プレイヤー結果 】\n`;
     
+    let totalDealerProfit = 0;
+
     for (let player of game.players) {
         let isWin = isRouletteWin(player.choice, resultNum);
         let resTxt = "";
 
         if (player.isLifeBet) {
-            resTxt = await processLifeBetResult(player, isWin, false, roomId, getRouletteMult(player.choice));
+            let lbRes = await processLifeBetResult(player, isWin, false, roomId, getRouletteMult(player.choice));
+            resTxt = lbRes.msg;
+            totalDealerProfit += lbRes.profit;
         } else {
             let winAmtForStats = 0; let resType = 'lose';
             if (isWin) { 
@@ -1599,9 +1662,11 @@ const resolveRoulette = async (roomId, resultNum) => {
                 await addMoney(player.aid, winAmt); 
                 winAmtForStats = winAmt; resType = 'win';
                 resTxt = `(cracker) 的中！ (${mult}倍) (+${formatNumber(winAmt)})`; 
+                totalDealerProfit -= (winAmt - player.bet);
             } else { 
                 resTxt = `💀 はずれ (没収)`; 
                 await processOwnerSkill(player.aid, player.bet, roomId);
+                totalDealerProfit += player.bet;
             }
             await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType);
         }
@@ -1610,6 +1675,7 @@ const resolveRoulette = async (roomId, resultNum) => {
 
         msg += `[piconname:${player.aid}]: 予想[${player.choice}] ➡ ${resTxt}\n`; 
     }
+    await affectKabuPrice(totalDealerProfit);
     await sendMessage(roomId, msg + "[/info]"); 
     gameState[roomId] = null; 
 };
@@ -1639,12 +1705,16 @@ const resolveDerby = async (roomId, mId) => {
     
     let msg = `[info][title]🐎 ダービー 最終結果[/title]🎯 的中馬連: 【 ${winCombo} 】 (${odd}倍)\n[hr]【 プレイヤー結果 】\n`;
     
+    let totalDealerProfit = 0;
+
     for (let player of game.players) {
         let isWin = player.choice === winCombo;
         let resTxt = "";
 
         if (player.isLifeBet) {
-            resTxt = await processLifeBetResult(player, isWin, false, roomId, odd);
+            let lbRes = await processLifeBetResult(player, isWin, false, roomId, odd);
+            resTxt = lbRes.msg;
+            totalDealerProfit += lbRes.profit;
         } else {
             let winAmtForStats = 0; let resType = 'lose';
             if (isWin) { 
@@ -1652,9 +1722,11 @@ const resolveDerby = async (roomId, mId) => {
                 await addMoney(player.aid, winAmt); 
                 winAmtForStats = winAmt; resType = 'win';
                 resTxt = `(cracker) 的中！ (+${formatNumber(winAmt)} コイン)\n`; 
+                totalDealerProfit -= (winAmt - player.bet);
             } else { 
                 resTxt = `💀 はずれ (没収)\n`; 
                 await processOwnerSkill(player.aid, player.bet, roomId);
+                totalDealerProfit += player.bet;
             }
             await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType);
         }
@@ -1663,6 +1735,7 @@ const resolveDerby = async (roomId, mId) => {
 
         msg += `[piconname:${player.aid}]: 予想[${player.choice}] ➡ ${resTxt}`; 
     }
+    await affectKabuPrice(totalDealerProfit);
     await sendMessage(roomId, msg + "[/info]"); 
     gameState[roomId] = null; 
 };
@@ -1683,6 +1756,8 @@ const resolveDaifugo = async (roomId) => {
     let ranks = ["大富豪", "富豪", "平民", "貧民", "大貧民"];
     let mults = [3.0, 1.5, 0, 0, 0]; 
     
+    let totalDealerProfit = 0;
+
     for (let i=0; i<g.daifugo.rankings.length; i++) {
         let p = g.daifugo.rankings[i];
         let rName = ranks[i] || "平民";
@@ -1692,7 +1767,9 @@ const resolveDaifugo = async (roomId) => {
         if (p.aid !== 'bot') {
             let isWin = mult > 0;
             if (p.isLifeBet) {
-                resTxt = await processLifeBetResult(p, isWin, false, roomId, mult);
+                let lbRes = await processLifeBetResult(p, isWin, false, roomId, mult);
+                resTxt = lbRes.msg;
+                totalDealerProfit += lbRes.profit;
             } else {
                 let winAmtForStats = 0; let resType = 'lose';
                 if (isWin) {
@@ -1700,9 +1777,11 @@ const resolveDaifugo = async (roomId) => {
                     await addMoney(p.aid, winAmt);
                     winAmtForStats = winAmt; resType = 'win';
                     resTxt = `(cracker) ${rName}！ (${mult}倍) (+${formatNumber(winAmt)})`;
+                    totalDealerProfit -= (winAmt - p.bet);
                 } else {
                     resTxt = `💀 ${rName}... (没収)`;
                     await processOwnerSkill(p.aid, p.bet, roomId);
+                    totalDealerProfit += p.bet;
                 }
                 await updatePlayerStats(p.aid, p.bet, winAmtForStats, resType);
             }
@@ -1713,6 +1792,7 @@ const resolveDaifugo = async (roomId) => {
             msg += `${i+1}位: 🤖 ディーラー (${rName})\n`;
         }
     }
+    await affectKabuPrice(totalDealerProfit);
     await sendMessage(roomId, msg + "[/info]");
     gameState[roomId] = null;
 };
@@ -1870,6 +1950,7 @@ app.post('/webhook', (req, res) => {
                 let g = gameState[roomId];
                 if (!g || g.state === 'IDLE') return sendTempMessage(roomId, `[info]⚠️ 現在進行中のゲームはありません。[/info]`);
                 if (g.state === 'RECRUITING') return sendTempMessage(roomId, `[info]⚠️ ゲームが開始されていません。[/info]`);
+                if (g.type === 'derby') return sendTempMessage(roomId, `[info]⚠️ 競馬の未来は不確定要素が多すぎて視えません。[/info]`);
                 
                 if (player.skill_date === today) return sendTempMessage(roomId, `[info]⚠️ 未来視の能力は1日1回までです。[/info]`);
                 
@@ -1912,8 +1993,6 @@ app.post('/webhook', (req, res) => {
                         if (!isTrue) dice = [Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1];
                         futureMsg = `次の壺の中身は【 ${dice[0]} と ${dice[1]} 】のようです...`;
                     } else return sendTempMessage(roomId, `[info]⚠️ ベット中に使用してください。[/info]`);
-                } else if (g.type === 'derby') {
-                    return sendTempMessage(roomId, `[info]⚠️ 競馬(ダービー)の未来は不確定要素が多すぎて視えません。[/info]`);
                 } else if (g.type === 'cc') {
                     if (g.state === 'BETTING') {
                         if (!g.botRoll) g.botRoll = generateChinchiroRoll();
@@ -1948,11 +2027,13 @@ app.post('/webhook', (req, res) => {
 
             // --- 株機能 ---
             if (/(^|\n)\/kabu\b/.test(body) && gambleActive) {
-                await updateKabuPrice();
                 const chartConf = {
                     type: 'line',
                     data: {
-                        labels: kabuData.history.map((_, i) => `${kabuData.history.length - i - 1}h前`).reverse(),
+                        labels: kabuData.history.map((_, i) => {
+                            let diff = kabuData.history.length - i - 1;
+                            return diff === 0 ? "最新" : `${diff}回前`;
+                        }),
                         datasets: [{ label: '株価(Coin)', data: kabuData.history, borderColor: 'green', fill: false }]
                     },
                     options: { legend: { display: false } }
@@ -1962,7 +2043,7 @@ app.post('/webhook', (req, res) => {
                     const imageRes = await axios.get(chartUrl, { responseType: 'arraybuffer' });
                     const imageBuffer = Buffer.from(imageRes.data);
                     const formDataBoundary = '----WebKitFormBoundary7MA4YWxkTrZu0gW';
-                    let postData = `--${formDataBoundary}\r\nContent-Disposition: form-data; name="message"\r\n\r\n[info][title]📈 株式市場 (1時間ごとに変動)[/title]💰 現在の株価: ${formatNumber(kabuData.price)} コイン\n📉 市場の残り株数: ${9999 - kabuData.totalIssued} / 9999\n📦 あなたの保有数: ${player.kabu_owned || 0} 株[/info]\r\n--${formDataBoundary}\r\nContent-Disposition: form-data; name="file"; filename="kabu_chart.png"\r\nContent-Type: image/png\r\n\r\n`;
+                    let postData = `--${formDataBoundary}\r\nContent-Disposition: form-data; name="message"\r\n\r\n[info][title]📈 株式市場 (ゲーム結果により変動)[/title]💰 現在の株価: ${formatNumber(kabuData.price)} コイン\n📉 市場の残り株数: ${9999 - kabuData.totalIssued} / 9999\n📦 あなたの保有数: ${player.kabu_owned || 0} 株[/info]\r\n--${formDataBoundary}\r\nContent-Disposition: form-data; name="file"; filename="kabu_chart.png"\r\nContent-Type: image/png\r\n\r\n`;
                     const payload = Buffer.concat([ Buffer.from(postData, 'utf8'), imageBuffer, Buffer.from(`\r\n--${formDataBoundary}--\r\n`, 'utf8') ]);
                     await axios.post(`https://api.chatwork.com/v2/rooms/${roomId}/files`, payload, {
                         headers: { 'X-ChatWorkToken': process.env.CHATWORK_API_TOKEN, 'Content-Type': `multipart/form-data; boundary=${formDataBoundary}` }
@@ -1975,7 +2056,6 @@ app.post('/webhook', (req, res) => {
 
             const buyKabuMatch = body.match(/(^|\n)\/buy-kabu\s+([0-9]+)/);
             if (buyKabuMatch && gambleActive) {
-                await updateKabuPrice();
                 let cnt = parseInt(buyKabuMatch[2], 10);
                 if (cnt > 0) {
                     if (kabuData.totalIssued + cnt > 9999) return sendTempMessage(roomId, `[info]⚠️ 市場に十分な株が残っていません。(残り: ${9999 - kabuData.totalIssued}株)[/info]`);
@@ -1992,7 +2072,6 @@ app.post('/webhook', (req, res) => {
 
             const sellKabuMatch = body.match(/(^|\n)\/sell-kabu\s+(all|[0-9]+)/);
             if (sellKabuMatch && gambleActive) {
-                await updateKabuPrice();
                 let cnt = sellKabuMatch[2] === 'all' ? (player.kabu_owned || 0) : parseInt(sellKabuMatch[2], 10);
                 if (cnt > 0 && (player.kabu_owned || 0) >= cnt) {
                     let revenue = kabuData.price * cnt;
@@ -2025,7 +2104,7 @@ app.post('/webhook', (req, res) => {
             }
 
             if (/(^|\n)\/help-gya\b/.test(body)) {
-                const helpMsg = `[info][title]🎰 カジノ＆ライフ 総合案内 (V52 Ultra Update)[/title]
+                const helpMsg = `[info][title]🎰 カジノ＆ライフ 総合案内 (V53 Ultra Update)[/title]
 【 🏦 銀行・株式 】
 /status : 状態確認(所持金, 預金, 戦績, 純資産など)
 /deposit [金額|max|half] : 所持金を銀行へ預け入れる
@@ -2318,6 +2397,9 @@ app.post('/webhook', (req, res) => {
                     
                     let wA = bet * ml; if (wA > 0) await addMoney(senderId, wA);
                     await updatePlayerStats(senderId, bet, wA, wA > 0 ? 'win' : 'lose');
+                    
+                    let dealerProfit = bet - wA;
+                    await affectKabuPrice(dealerProfit);
                     
                     let msgRes = await chatworkClient.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(`[info]🎰 SLOT MACHINE 回転中...\n[ ❓ | ❓ | ❓ ][/info]`)}`);
                     if (msgRes && msgRes.data) {
