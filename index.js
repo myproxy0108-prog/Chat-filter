@@ -25,33 +25,21 @@ let ownerSkill = { aid: null, expire: 0 };
 
 chatworkClient.get('/me').then(res => { BOT_ACCOUNT_ID = res.data.account_id.toString(); }).catch(()=>{});
 
-const initRealStocks = {
-    'ディズニー': { price: 10000, history: [10000], totalIssued: 0, vol: 0.1 },
-    '日産': { price: 500, history: [500], totalIssued: 0, vol: 0.15 },
-    'ベンツ': { price: 7000, history: [7000], totalIssued: 0, vol: 0.08 },
-    'アップル': { price: 20000, history: [20000], totalIssued: 0, vol: 0.12 },
-    'ハブ': { price: 800, history: [800], totalIssued: 0, vol: 0.2 },
-    'トヨタ': { price: 3000, history: [3000], totalIssued: 0, vol: 0.05 },
-    'ソニー': { price: 13000, history: [13000], totalIssued: 0, vol: 0.09 },
-    '任天堂': { price: 8000, history: [8000], totalIssued: 0, vol: 0.11 },
-    'マクドナルド': { price: 6000, history: [6000], totalIssued: 0, vol: 0.06 },
-    'アマゾン': { price: 18000, history: [18000], totalIssued: 0, vol: 0.13 }
-};
-
 const realStockTickers = {
-    'ディズニー': { symbol: 'DIS', curr: 'USD' },
-    '日産': { symbol: '7201.T', curr: 'JPY' },
-    'ベンツ': { symbol: 'MBG.DE', curr: 'EUR' },
-    'アップル': { symbol: 'AAPL', curr: 'USD' },
-    'ハブ': { symbol: '3030.T', curr: 'JPY' },
-    'トヨタ': { symbol: '7203.T', curr: 'JPY' },
-    'ソニー': { symbol: '6758.T', curr: 'JPY' },
-    '任天堂': { symbol: '7974.T', curr: 'JPY' },
-    'マクドナルド': { symbol: 'MCD', curr: 'USD' },
-    'アマゾン': { symbol: 'AMZN', curr: 'USD' }
+    'ディズニー': { symbol: 'DIS', curr: 'USD', defaultPrice: 10000 },
+    '日産': { symbol: '7201.T', curr: 'JPY', defaultPrice: 500 },
+    'ベンツ': { symbol: 'MBG.DE', curr: 'EUR', defaultPrice: 7000 },
+    'アップル': { symbol: 'AAPL', curr: 'USD', defaultPrice: 20000 },
+    'ハブ': { symbol: '3030.T', curr: 'JPY', defaultPrice: 800 },
+    'トヨタ': { symbol: '7203.T', curr: 'JPY', defaultPrice: 3000 },
+    'ソニー': { symbol: '6758.T', curr: 'JPY', defaultPrice: 13000 },
+    '任天堂': { symbol: '7974.T', curr: 'JPY', defaultPrice: 8000 },
+    'マクドナルド': { symbol: 'MCD', curr: 'USD', defaultPrice: 6000 },
+    'アマゾン': { symbol: 'AMZN', curr: 'USD', defaultPrice: 18000 },
+    'KADOKAWA': { symbol: '9468.T', curr: 'JPY', defaultPrice: 3000 }
 };
 
-let kabuData = { price: 3000, history: [3000], totalIssued: 0, lastUpdate: Date.now(), pendingProfit: 0, realStocks: initRealStocks };
+let kabuData = { price: 3000, history: [3000], totalIssued: 0, lastUpdate: Date.now(), pendingProfit: 0, realStocks: {} };
 
 supabase.from('config').select('*').in('key', ['gamble_active', 'kabu_data']).then(r => {
     if (r.data) {
@@ -61,10 +49,10 @@ supabase.from('config').select('*').in('key', ['gamble_active', 'kabu_data']).th
         if (kd) {
             let parsed = JSON.parse(kd.value);
             kabuData = { ...kabuData, ...parsed };
-            if (!kabuData.realStocks) kabuData.realStocks = initRealStocks;
-            else {
-                for (let k in initRealStocks) {
-                    if (!kabuData.realStocks[k]) kabuData.realStocks[k] = initRealStocks[k];
+            if (!kabuData.realStocks) kabuData.realStocks = {};
+            for (let k in realStockTickers) {
+                if (!kabuData.realStocks[k]) {
+                    kabuData.realStocks[k] = { price: realStockTickers[k].defaultPrice, totalIssued: 0 };
                 }
             }
         }
@@ -113,32 +101,15 @@ const calculateNetWorth = (p) => {
     let tMoney = p.money || 0;
     let tBank = p.bank || 0;
     let totalStockValue = (p.kabu_owned || 0) * kabuData.price;
-    if (p.stocks) {
+    if (p.stocks && kabuData.realStocks) {
         let s = JSON.parse(p.stocks);
         for (let k in s) {
-            if (kabuData.realStocks && kabuData.realStocks[k]) {
+            if (kabuData.realStocks[k]) {
                 totalStockValue += s[k] * kabuData.realStocks[k].price;
             }
         }
     }
     return tMoney + tBank + totalStockValue;
-};
-
-// --- Yahoo Finance API 株価取得関数 ---
-const fetchRealTimePrice = async (symbol) => {
-    try {
-        const res = await axios.get(`https://query2.finance.yahoo.com/v8/finance/chart/${symbol}`, {
-            headers: { 
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Accept': '*/*'
-            },
-            timeout: 5000
-        });
-        if (res.data && res.data.chart && res.data.chart.result && res.data.chart.result.length > 0) {
-            return res.data.chart.result[0].meta.regularMarketPrice;
-        }
-    } catch(e) {}
-    return null;
 };
 
 // --- 為替API取得関数 ---
@@ -152,28 +123,56 @@ const fetchExchangeRates = async () => {
             return { usd: usdJpy, eur: eurJpy };
         }
     } catch(e) {}
-    return { usd: 150, eur: 160 }; // 取得失敗時のフォールバック
+    return { usd: 150, eur: 160 };
 };
 
-// --- 株価更新エンジン (1時間ごとに蓄積利益で変動。最大±15%) ---
+// --- Yahoo Finance API 株価取得関数 ---
+const fetchStockData = async (tickerInfo, range = '1d') => {
+    let interval = '15m';
+    if (range === '1w') { range = '5d'; interval = '15m'; }
+    else if (range === '1m') { range = '1mo'; interval = '1d'; }
+    else if (range === '1y') { range = '1y'; interval = '1wk'; }
+    else { range = '1d'; interval = '5m'; }
+
+    try {
+        const res = await axios.get(`https://query2.finance.yahoo.com/v8/finance/chart/${tickerInfo.symbol}?range=${range}&interval=${interval}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0' },
+            timeout: 5000
+        });
+        if (res.data && res.data.chart && res.data.chart.result && res.data.chart.result.length > 0) {
+            const result = res.data.chart.result[0];
+            const currentPrice = result.meta.regularMarketPrice;
+            const quotes = result.indicators.quote[0].close || [];
+            let history = quotes.filter(v => v !== null);
+            
+            let rate = 1;
+            if (tickerInfo.curr !== 'JPY') {
+                const rates = await fetchExchangeRates();
+                if (tickerInfo.curr === 'USD') rate = rates.usd;
+                if (tickerInfo.curr === 'EUR') rate = rates.eur;
+            }
+            
+            return {
+                price: Math.floor(currentPrice * rate),
+                history: history.map(v => Math.floor(v * rate))
+            };
+        }
+    } catch(e) {}
+    return null;
+};
+
+// --- カジノ株価更新エンジン ---
 const updateKabuPrice = async () => {
     let now = Date.now();
     let hoursPassed = Math.floor((now - kabuData.lastUpdate) / 3600000);
     if (hoursPassed > 0) {
-        if (!kabuData.realStocks) kabuData.realStocks = initRealStocks;
-
-        // 最新の為替レートを取得
-        let rates = await fetchExchangeRates();
-        let usdJpy = rates.usd;
-        let eurJpy = rates.eur;
-
         for (let i = 0; i < hoursPassed; i++) {
-            // カジノ株の変動
             let changePercent = 0;
             if (i === 0) {
                 changePercent = ((kabuData.pendingProfit || 0) / 500000) * 0.05;
                 kabuData.pendingProfit = 0;
             }
+
             if (changePercent > 0.15) changePercent = 0.15;
             if (changePercent < -0.15) changePercent = -0.15;
 
@@ -187,32 +186,6 @@ const updateKabuPrice = async () => {
             if (kabuData.price < 100) kabuData.price = 100;
             if (kabuData.price > 1000000) kabuData.price = 1000000;
             kabuData.history.push(kabuData.price);
-
-            // リアル株の変動
-            for (let k in kabuData.realStocks) {
-                let s = kabuData.realStocks[k];
-                if (i === hoursPassed - 1) { 
-                    // 一番直近の更新タイミングでAPIから実際の価格を取得
-                    if (realStockTickers[k]) {
-                        let currentPrice = await fetchRealTimePrice(realStockTickers[k].symbol);
-                        if (currentPrice) {
-                            if (realStockTickers[k].curr === 'USD') currentPrice *= usdJpy;
-                            else if (realStockTickers[k].curr === 'EUR') currentPrice *= eurJpy;
-                            s.price = Math.floor(currentPrice);
-                        } else {
-                            // 取得失敗時はランダム変動
-                            let c = (Math.random() * s.vol * 2) - s.vol;
-                            s.price += Math.floor(s.price * c);
-                        }
-                    }
-                } else {
-                    let c = (Math.random() * s.vol * 2) - s.vol;
-                    s.price += Math.floor(s.price * c);
-                }
-                if (s.price < 10) s.price = 10;
-                s.history.push(s.price);
-                if (s.history.length > 24) s.history = s.history.slice(-24);
-            }
         }
         kabuData.lastUpdate = now;
         if (kabuData.history.length > 24) kabuData.history = kabuData.history.slice(-24);
@@ -584,6 +557,10 @@ const handleGameTimeout = async (roomId) => {
                 let ex = `\n【 🐎 馬連オッズ 】\n${game.oddsStr}\n[hr]/#bet [額] [馬1]-[馬2] (例: /#bet 100 1-2)`;
                 await sendTempMessage(roomId, `[info][title]⏳ 募集終了・ゲーム開始[/title]参加者が確定しました。${ex}\n[hr](※制限2分。残り1分でリマインドします)[/info]`, 120000);
                 startGameTimer(roomId, 120000, true);
+            } else if (game.type === 'crash') {
+                let ex = `/#bet [額] [目標倍率(1.01以上)] (例: /#bet 100 2.5)`;
+                await sendTempMessage(roomId, `[info][title]⏳ 募集終了・ゲーム開始[/title]参加者が確定しました。\n\n${ex}\n[hr](※制限1分。 /#bet life も使えます)[/info]`);
+                startGameTimer(roomId, 60000);
             } else if (game.type === 'highlow') {
                 let ex = `/#bet [額] high か /#bet [額] low`;
                 await sendTempMessage(roomId, `[info][title]⏳ 募集終了・ゲーム開始[/title]参加者が確定しました。\n\n${ex}\n[hr](※制限1分。 /#bet life も使えます)[/info]`);
@@ -694,7 +671,7 @@ const handleGameTimeout = async (roomId) => {
                     }
                 }
 
-                await sendMessage(roomId, `[info][title]🏆 勝者: [piconname:${winner.aid}][/title]逃げ出さなかった [piconname:${winner.aid}] が相手の賭け金を含めた ${formatNumber(totalPot)} コインを総取りしました！${specMsg}[/info]`);
+                await sendMessage(roomId, `[info][title]🏆 勝者: [piconname:${winner.aid}][/title]逃げ出さなかった [piconname:${winner.aid}] が相手の賭け金を含めた ${formatNumber(totalPot)} コインを総取りしました！[/info]`);
                 gameState[roomId] = null;
             }
         } else {
@@ -757,6 +734,9 @@ const checkGameProgress = async (roomId) => {
         if (game.type === 'derby') {
             clearTimeout(game.timeoutId); if (game.remindId) clearTimeout(game.remindId);
             await proceedBotDerby(roomId);
+        } else if (game.type === 'crash') {
+            clearTimeout(game.timeoutId);
+            await proceedBotCrash(roomId);
         } else if (game.type === 'highlow') {
             clearTimeout(game.timeoutId);
             await proceedBotHighLow(roomId);
@@ -1373,6 +1353,37 @@ const proceedBotDerby = async (roomId) => {
     }
 };
 
+const proceedBotCrash = async (roomId) => {
+    let game = gameState[roomId];
+    let cp = game.crashPoint;
+    if (!cp) {
+        cp = Math.max(1.00, (0.95 / Math.random()));
+        if (cp > 100) cp = 100.0;
+        game.crashPoint = cp.toFixed(2);
+    }
+    
+    await sendMessage(roomId, `[info]🚀 ロケットが発射されました！\n倍率が上がっていきます...[/info]`);
+    await sleep(1500);
+    
+    let msgRes = await chatworkClient.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(`[info]🚀 飛行中... [ 1.00x ][/info]`)}`);
+    if (msgRes && msgRes.data) {
+        let mId = msgRes.data.message_id;
+        let target = parseFloat(game.crashPoint);
+        
+        let steps = [1.2, 1.5, 2.0, 3.0, 5.0, 10.0].filter(x => x < target);
+        for(let s of steps) {
+            await sleep(1000);
+            await editMessage(roomId, mId, `[info]🚀 飛行中... [ ${s.toFixed(2)}x ][/info]`);
+        }
+        await sleep(1000);
+        await editMessage(roomId, mId, `[info]💥 ＢＡＡＡＮＧ！！！\n\nロケットは [ ${game.crashPoint}x ] でクラッシュしました！[/info]`);
+        await sleep(2000);
+        await resolveCrash(roomId, mId);
+    } else {
+        await resolveCrash(roomId);
+    }
+};
+
 const proceedBotHighLow = async (roomId) => {
     let game = gameState[roomId];
     await sendMessage(roomId, `[info]🃏 [ディーラー] カードをドローします...[/info]`);
@@ -1941,6 +1952,51 @@ const resolveDerby = async (roomId, mId) => {
     gameState[roomId] = null; 
 };
 
+const resolveCrash = async (roomId, mId) => {
+    let game = gameState[roomId]; 
+    if (!game) return; 
+    clearTimeout(game.timeoutId);
+    
+    let cp = parseFloat(game.crashPoint);
+    let msg = `[info][title]🚀 クラッシュ 最終結果[/title]💥 クラッシュ倍率: 【 ${game.crashPoint}x 】\n[hr]【 プレイヤー結果 】\n`;
+    
+    let totalDealerProfit = 0;
+
+    for (let player of game.players) {
+        let targetMult = parseFloat(player.choice) || 1.01;
+        let isWin = targetMult <= cp;
+        let resTxt = "";
+        
+        if (player.isLifeBet) {
+            let lbRes = await processLifeBetResult(player, isWin, false, roomId, targetMult);
+            resTxt = lbRes.msg;
+            totalDealerProfit += lbRes.profit;
+        } else {
+            let winAmtForStats = 0; let resType = 'lose';
+            if (isWin) { 
+                let winAmt = Math.floor(player.bet * targetMult);
+                await addMoney(player.aid, winAmt); 
+                winAmtForStats = winAmt; resType = 'win';
+                resTxt = `(cracker) 利確成功！ (${targetMult}x) (+${formatNumber(winAmt)})`; 
+                totalDealerProfit -= (winAmt - player.bet);
+            } else { 
+                resTxt = `💀 クラッシュ (没収)`; 
+                await processOwnerSkill(player.aid, player.bet, roomId);
+                totalDealerProfit += player.bet;
+            }
+            await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType);
+        }
+        if (isWin) await updateWinStreak(player.aid, 'win', roomId);
+        else await updateWinStreak(player.aid, 'lose', roomId);
+
+        msg += `[piconname:${player.aid}]: 目標[${targetMult}x] ➡ ${resTxt}\n`; 
+    }
+    kabuData.pendingProfit = (kabuData.pendingProfit || 0) + totalDealerProfit;
+    await supabase.from('config').upsert({ key: 'kabu_data', value: JSON.stringify(kabuData) });
+    await sendMessage(roomId, msg + "[/info]"); 
+    gameState[roomId] = null; 
+};
+
 const resolveHighLow = async (roomId, mId) => {
     let game = gameState[roomId]; 
     if (!game) return; 
@@ -2182,7 +2238,7 @@ app.post('/webhook', (req, res) => {
             let myJob = player ? (player.job || 'サラリーマン') : 'サラリーマン';
 
             // トラウマチェック
-            const isGameCmd = body.match(/(^|\n)[/#](chouhan|cc|derby|bj|poker|yacht|sicbo|rolet|buta|daifugo|russian|highlow)\b/);
+            const isGameCmd = body.match(/(^|\n)[/#](chouhan|cc|derby|bj|poker|yacht|sicbo|rolet|buta|daifugo|russian|crash|highlow)\b/);
             const isJoinCmd = body.match(/(^|\n)[/#]join\b/);
             const isBetCmd = body.match(/(^|\n)[/#]bet\s+(max|half|life|[0-9.]+)/);
             if ((isGameCmd || isJoinCmd || isBetCmd) && gambleActive) {
@@ -2233,7 +2289,7 @@ app.post('/webhook', (req, res) => {
                 
                 if (player.skill_date === today) return sendTempMessage(roomId, `[info]⚠️ 未来視の能力は1日1回までです。[/info]`);
                 
-                let isTrue = Math.random() < 0.7; // 70%の確率で正解
+                let isTrue = Math.random() < 0.7;
                 let futureMsg = "";
 
                 if (['bj', 'buta', 'poker', 'daifugo'].includes(g.type)) {
@@ -2241,7 +2297,9 @@ app.post('/webhook', (req, res) => {
                         let card = g.deck[g.deck.length - 1];
                         if (!isTrue) {
                             const suits = ['♠', '♥', '♣', '♦'], ranks = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
-                            card = { suit: suits[Math.floor(Math.random()*4)], rank: ranks[Math.floor(Math.random()*13)] };
+                            let fc;
+                            do { fc = { suit: suits[Math.floor(Math.random()*4)], rank: ranks[Math.floor(Math.random()*13)] }; } while (fc.suit === card.suit && fc.rank === card.rank);
+                            card = fc;
                         }
                         futureMsg = `次に出るカードは【 ${card.suit}${card.rank} 】のようです...`;
                     } else {
@@ -2262,28 +2320,58 @@ app.post('/webhook', (req, res) => {
                     if (g.state === 'BETTING') {
                         if (!g.futureResult) g.futureResult = [Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1];
                         let dice = g.futureResult;
-                        if (!isTrue) dice = [Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1];
+                        if (!isTrue) {
+                            let falseDice;
+                            do { falseDice = [Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1]; } while(falseDice.join(',') === dice.join(','));
+                            dice = falseDice;
+                        }
                         futureMsg = `次のダイスは【 ${dice.join(', ')} 】のようです...`;
                     } else return sendTempMessage(roomId, `[info]⚠️ ベット中に使用してください。[/info]`);
                 } else if (g.type === 'chouhan') {
                     if (g.state === 'BETTING') {
                         if (!g.futureResult) g.futureResult = [Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1];
                         let dice = g.futureResult;
-                        if (!isTrue) dice = [Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1];
+                        if (!isTrue) {
+                            let falseDice;
+                            do { falseDice = [Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1]; } while(falseDice.join(',') === dice.join(','));
+                            dice = falseDice;
+                        }
                         futureMsg = `次の壺の中身は【 ${dice[0]} と ${dice[1]} 】のようです...`;
                     } else return sendTempMessage(roomId, `[info]⚠️ ベット中に使用してください。[/info]`);
                 } else if (g.type === 'cc') {
                     if (g.state === 'BETTING') {
                         if (!g.botRoll) g.botRoll = generateChinchiroRoll();
                         let d = g.botRoll.dice;
-                        if (!isTrue) d = generateChinchiroRoll().dice;
+                        if (!isTrue) {
+                            let falseDice;
+                            do { falseDice = generateChinchiroRoll().dice; } while(falseDice.join(',') === d.join(','));
+                            d = falseDice;
+                        }
                         futureMsg = `親(ディーラー)の出目は【 ${d.join(', ')} 】のようです...`;
+                    } else return sendTempMessage(roomId, `[info]⚠️ ベット中に使用してください。[/info]`);
+                } else if (g.type === 'crash') {
+                    if (g.state === 'BETTING') {
+                        if (!g.crashPoint) {
+                            let cp = Math.max(1.00, (0.95 / Math.random()));
+                            if (cp > 100) cp = 100.0;
+                            g.crashPoint = cp.toFixed(2);
+                        }
+                        let cp = g.crashPoint;
+                        if (!isTrue) {
+                            let falseCp;
+                            do { falseCp = Math.max(1.00, (0.95 / Math.random())).toFixed(2); } while(falseCp === cp);
+                            cp = falseCp;
+                        }
+                        futureMsg = `次発射されるロケットは【 ${cp}x 】付近でクラッシュするようです...`;
                     } else return sendTempMessage(roomId, `[info]⚠️ ベット中に使用してください。[/info]`);
                 } else if (g.type === 'highlow') {
                     if (g.state === 'BETTING') {
                         if (!g.futureResult) g.futureResult = [Math.floor(Math.random()*13)+1, Math.floor(Math.random()*13)+1];
                         let res = g.futureResult[1] > g.futureResult[0] ? 'High' : (g.futureResult[1] < g.futureResult[0] ? 'Low' : 'Draw');
-                        if (!isTrue) res = ['High', 'Low', 'Draw'][Math.floor(Math.random()*3)];
+                        if (!isTrue) {
+                            let opts = ['High', 'Low', 'Draw'].filter(x => x !== res);
+                            res = opts[Math.floor(Math.random()*opts.length)];
+                        }
                         futureMsg = `次は【 ${res} 】になるようです...`;
                     } else return sendTempMessage(roomId, `[info]⚠️ ベット中に使用してください。[/info]`);
                 } else if (g.type === 'yacht') {
@@ -2292,14 +2380,22 @@ app.post('/webhook', (req, res) => {
                         if (pl && pl.aid === senderId) {
                             if (!pl.futureDice) pl.futureDice = Array.from({length:5}, ()=>Math.floor(Math.random()*6)+1);
                             let d = pl.futureDice;
-                            if (!isTrue) d = Array.from({length:5}, ()=>Math.floor(Math.random()*6)+1);
+                            if (!isTrue) {
+                                let falseDice;
+                                do { falseDice = Array.from({length:5}, ()=>Math.floor(Math.random()*6)+1); } while(falseDice.join(',') === d.join(','));
+                                d = falseDice;
+                            }
                             futureMsg = `あなたが次に振るダイスは【 ${d.join(', ')} 】のようです...`;
                         } else return sendTempMessage(roomId, `[info]⚠️ 自分のターンで使用してください。[/info]`);
                     } else return sendTempMessage(roomId, `[info]⚠️ アクション中に使用してください。[/info]`);
                 } else if (g.type === 'russian') {
                     if (g.state === 'ACTION') {
                         let dist = (g.bulletPos - g.currentChamber + 6) % 6;
-                        if (!isTrue) dist = Math.floor(Math.random() * 6);
+                        if (!isTrue) {
+                            let falseDist;
+                            do { falseDist = Math.floor(Math.random() * 6); } while (falseDist === dist);
+                            dist = falseDist;
+                        }
                         if (dist === 0) futureMsg = `次引き金を引くと【 弾が出る 】ようです...`;
                         else futureMsg = `あと【 ${dist} 回 】は空砲のようです...`;
                     } else return sendTempMessage(roomId, `[info]⚠️ アクション中に使用してください。[/info]`);
@@ -2312,13 +2408,14 @@ app.post('/webhook', (req, res) => {
             }
 
             // --- 株機能 ---
-            const kabuMatch = body.match(/(^|\n)[/#]kabu(?:\s+([^\s]+))?/);
+            const kabuMatch = body.match(/(^|\n)[/#]kabu(?:\s+([^\s]+))?(?:\s+(1d|1w|1m|1y))?/);
             if (kabuMatch && gambleActive) {
-                await updateKabuPrice();
+                await updateKabuPrice(); 
                 let targetKabu = kabuMatch[2];
+                let range = kabuMatch[3] || '1d';
                 
                 if (!targetKabu) {
-                    let msg = `[info][title]📈 株式市場一覧 (1時間ごとに変動)[/title]`;
+                    let msg = `[info][title]📈 株式市場一覧[/title]`;
                     msg += `💰 カジノ株: ${formatNumber(kabuData.price)} コイン (保有: ${player.kabu_owned || 0}株 / 残: ${9999 - kabuData.totalIssued})\n`;
                     let myStocks = player.stocks ? JSON.parse(player.stocks) : {};
                     if (kabuData.realStocks) {
@@ -2326,23 +2423,39 @@ app.post('/webhook', (req, res) => {
                             msg += `💰 ${k}: ${formatNumber(kabuData.realStocks[k].price)} コイン (保有: ${myStocks[k] || 0}株 / 残: ${9999 - kabuData.realStocks[k].totalIssued})\n`;
                         }
                     }
-                    msg += `[hr]※ グラフを見るには /#kabu [銘柄名] (例: /#kabu ディズニー)\n※ 買うには /#buy-kabu [銘柄名] [個数]\n※ 売るには /#sell-kabu [銘柄名] [個数|all][/info]`;
+                    msg += `[hr]※ グラフを見るには /#kabu [銘柄名] [期間(1d/1w/1m/1y)]\n例: /#kabu KADOKAWA 1w\n※ 買うには /#buy-kabu [銘柄名] [個数]\n※ 売るには /#sell-kabu [銘柄名] [個数|all][/info]`;
                     return sendMessage(roomId, msg);
                 } else {
                     let kData = null;
                     let pOwned = 0;
                     let pTotal = 0;
                     let kName = targetKabu;
+                    let historyData = [];
+                    let labels = [];
                     
                     if (targetKabu === 'カジノ株') {
                         kData = kabuData;
                         pOwned = player.kabu_owned || 0;
                         pTotal = kabuData.totalIssued;
-                    } else if (kabuData.realStocks && kabuData.realStocks[targetKabu]) {
-                        kData = kabuData.realStocks[targetKabu];
+                        historyData = kabuData.history;
+                        labels = kabuData.history.map((_, i) => {
+                            let diff = kabuData.history.length - i - 1;
+                            return diff === 0 ? "最新" : `${diff}h前`;
+                        }).reverse();
+                    } else if (realStockTickers[targetKabu]) {
+                        let sData = await fetchStockData(realStockTickers[targetKabu], range);
+                        if (sData) {
+                            kabuData.realStocks[targetKabu].price = sData.price;
+                            await supabase.from('config').upsert({ key: 'kabu_data', value: JSON.stringify(kabuData) });
+                            historyData = sData.history;
+                            labels = sData.history.map(() => ''); 
+                            kData = kabuData.realStocks[targetKabu];
+                        } else {
+                            return sendTempMessage(roomId, `[info]⚠️ 株価データの取得に失敗しました。[/info]`);
+                        }
                         let myStocks = player.stocks ? JSON.parse(player.stocks) : {};
                         pOwned = myStocks[targetKabu] || 0;
-                        pTotal = kData.totalIssued;
+                        pTotal = kabuData.realStocks[targetKabu].totalIssued || 0;
                     } else {
                         return sendTempMessage(roomId, `[info]⚠️ 銘柄「${targetKabu}」は見つかりません。[/info]`);
                     }
@@ -2350,11 +2463,8 @@ app.post('/webhook', (req, res) => {
                     const chartConf = {
                         type: 'line',
                         data: {
-                            labels: kData.history.map((_, i) => {
-                                let diff = kData.history.length - i - 1;
-                                return diff === 0 ? "最新" : `${diff}時間前`;
-                            }).reverse(),
-                            datasets: [{ label: `${kName}(Coin)`, data: kData.history, borderColor: 'green', fill: false }]
+                            labels: labels,
+                            datasets: [{ label: `${kName}(Coin)`, data: historyData, borderColor: 'green', fill: false, pointRadius: 0 }]
                         },
                         options: { legend: { display: false } }
                     };
@@ -2363,7 +2473,7 @@ app.post('/webhook', (req, res) => {
                         const imageRes = await axios.get(chartUrl, { responseType: 'arraybuffer' });
                         const imageBuffer = Buffer.from(imageRes.data);
                         const formDataBoundary = '----WebKitFormBoundary7MA4YWxkTrZu0gW';
-                        let postData = `--${formDataBoundary}\r\nContent-Disposition: form-data; name="message"\r\n\r\n[info][title]📈 ${kName} 株価チャート[/title]💰 現在の株価: ${formatNumber(kData.price)} コイン\n📉 市場の残り株数: ${9999 - pTotal} / 9999\n📦 あなたの保有数: ${pOwned} 株[/info]\r\n--${formDataBoundary}\r\nContent-Disposition: form-data; name="file"; filename="kabu_chart.png"\r\nContent-Type: image/png\r\n\r\n`;
+                        let postData = `--${formDataBoundary}\r\nContent-Disposition: form-data; name="message"\r\n\r\n[info][title]📈 ${kName} 株価チャート (${range})[/title]💰 現在の株価: ${formatNumber(kData.price)} コイン\n📉 市場の残り株数: ${9999 - pTotal} / 9999\n📦 あなたの保有数: ${pOwned} 株[/info]\r\n--${formDataBoundary}\r\nContent-Disposition: form-data; name="file"; filename="kabu_chart.png"\r\nContent-Type: image/png\r\n\r\n`;
                         const payload = Buffer.concat([ Buffer.from(postData, 'utf8'), imageBuffer, Buffer.from(`\r\n--${formDataBoundary}--\r\n`, 'utf8') ]);
                         await axios.post(`https://api.chatwork.com/v2/rooms/${roomId}/files`, payload, {
                             headers: { 'X-ChatWorkToken': process.env.CHATWORK_API_TOKEN, 'Content-Type': `multipart/form-data; boundary=${formDataBoundary}` }
@@ -2392,13 +2502,16 @@ app.post('/webhook', (req, res) => {
                         await supabase.from('players').update({ money: myMoney - cost, kabu_owned: (player.kabu_owned || 0) + cnt }).eq('account_id', senderId);
                         
                         return sendTempMessage(roomId, `[info]📈 [piconname:${senderId}]\n${kName}を ${cnt} 株購入しました。(-${formatNumber(cost)} コイン)[/info]`);
-                    } else if (kabuData.realStocks && kabuData.realStocks[kName]) {
-                        let sData = kabuData.realStocks[kName];
-                        if (sData.totalIssued + cnt > 9999) return sendTempMessage(roomId, `[info]⚠️ 市場に十分な株が残っていません。(残り: ${9999 - sData.totalIssued}株)[/info]`);
-                        let cost = sData.price * cnt;
+                    } else if (realStockTickers[kName]) {
+                        let sData = await fetchStockData(realStockTickers[kName], '1d');
+                        if (sData) kabuData.realStocks[kName].price = sData.price;
+
+                        let rsData = kabuData.realStocks[kName];
+                        if (rsData.totalIssued + cnt > 9999) return sendTempMessage(roomId, `[info]⚠️ 市場に十分な株が残っていません。(残り: ${9999 - rsData.totalIssued}株)[/info]`);
+                        let cost = rsData.price * cnt;
                         if (myMoney < cost) return sendTempMessage(roomId, `[info]⚠️ 所持金が足りません。(必要: ${formatNumber(cost)} コイン)[/info]`);
                         
-                        sData.totalIssued += cnt;
+                        rsData.totalIssued += cnt;
                         await supabase.from('config').upsert({ key: 'kabu_data', value: JSON.stringify(kabuData) });
                         
                         let myStocks = player.stocks ? JSON.parse(player.stocks) : {};
@@ -2428,7 +2541,10 @@ app.post('/webhook', (req, res) => {
                         await addMoney(senderId, revenue);
                         return sendTempMessage(roomId, `[info]📉 [piconname:${senderId}]\n${kName}を ${cnt} 株売却しました。(+${formatNumber(revenue)} コイン)[/info]`);
                     } else return sendTempMessage(roomId, `[info]⚠️ 指定した数の株を所持していません。[/info]`);
-                } else if (kabuData.realStocks && kabuData.realStocks[kName]) {
+                } else if (realStockTickers[kName]) {
+                    let sData = await fetchStockData(realStockTickers[kName], '1d');
+                    if (sData) kabuData.realStocks[kName].price = sData.price;
+
                     let myStocks = player.stocks ? JSON.parse(player.stocks) : {};
                     let pOwned = myStocks[kName] || 0;
                     let cnt = cntStr === 'all' ? pOwned : parseInt(cntStr, 10);
@@ -2461,20 +2577,21 @@ app.post('/webhook', (req, res) => {
                 else if (g === 'rolet') txt = `[title]🎡 ルーレットのルール[/title]数字(0〜36)や属性にベットします。\n/#bet 100 red (赤), black (黒), even (偶数), odd (奇数), high (19-36), low (1-18)\nまたは /#bet 100 5 のように数字を指定できます。\n【配当】属性は 2倍。数字単体は 36倍。`;
                 else if (g === 'buta') txt = `[title]🐷 豚のしっぽのルール[/title]ディーラーとチキンレースをします。\n/#draw でカードを引き、直前に引いたカードと「同じマーク(スート)」が出たらドボン(即負け)。\n【配当】ディーラーより引いた枚数が多ければ 賭け金×2。引き分けは返金。`;
                 else if (g === 'daifugo') txt = `[title]👑 大富豪のルール[/title]各プレイヤーに個別の「手札部屋」が作られます。\n手札部屋から /#play S3 や /#play H4 D4 のように出して進行します。\n出せない場合は /#pass してください。\n【特殊ルール】8切り、革命、イレブンバック\n【配当】1位(大富豪): 3倍、2位(富豪): 1.5倍、それ以外は没収。`;
+                else if (g === 'crash') txt = `[title]🚀 クラッシュのルール[/title]ゲームが始まると倍率が 1.00x からどんどん上昇していきますが、ランダムなタイミングで爆発(クラッシュ)します。\nあらかじめ「目標倍率」を設定しておき、その倍率に到達する前にクラッシュしなければ利確成功となります。\n(参加例: /#bet 1000 2.5 と打つと、2.5倍に到達で勝利。それより前にクラッシュすると没収。)`;
                 else if (g === 'highlow') txt = `[title]🃏 ハイローのルール[/title]ディーラーが2枚のカード(1〜13)を引き、2枚目のカードが1枚目より大きい(high)か、小さい(low)かを当てるゲームです。\n(参加例: /#bet 1000 high )\n【配当】予想的中なら 賭け金×2。同数だった場合はDraw(返金)となります。`;
                 else txt = `指定されたゲームのルールは見つかりませんでした。`;
                 return sendTempMessage(roomId, `[info]${txt}[/info]`, 120000);
             }
 
             if (/(^|\n)[/#]help-gya\b/.test(body)) {
-                const helpMsg = `[info][title]🎰 カジノ＆ライフ 総合案内 (V55 Ultra Update)[/title]
+                const helpMsg = `[info][title]🎰 カジノ＆ライフ 総合案内 (V56 Ultra Update)[/title]
 【 🏦 銀行・株式 】
 /#status : 状態確認(所持金, 預金, 戦績, 純資産など)
 /#deposit [金額|max|half] : 所持金を銀行へ預け入れる
 /#withdraw [金額|max|half] : 銀行から引き出す
 /#give [金額] : 相手に送金 (税金10%, 1日最大50万まで)
 /#kabu : 株式市場の一覧を見る
-/#kabu [銘柄] : 特定の銘柄のチャートを見る
+/#kabu [銘柄] [期間(1d/1w/1m/1y)] : 特定の銘柄のチャートを見る
 /#buy-kabu [銘柄] [個数], /#sell-kabu [銘柄] [個数|all] : 株の売買
 /#money-rank : 純資産ランキング
 /#winner-rank : 勝利数ランキング
@@ -2485,7 +2602,7 @@ app.post('/webhook', (req, res) => {
 /#job : 転職と求人
 /#work : 職業給料 (1分に1回, 1日10回上限)
 /#catch または /#goal : 職業専用能力
-/#owner : [ギャンブルオーナー] 30分間、他人の負け金を回収 (1日1回)
+/#owner : [ギャンブルオーナー] 30分間、他人の負け金の50%を回収 (1日1回)
 /#next-future : [未来人] ゲーム結果を予知 (1日1回)
 ※ [賭博師] は毎日初回発言時にスロット回数が自動追加されます。
 /#omikuji : 1日1回おみくじ (スロット確率変動)
@@ -2500,6 +2617,7 @@ app.post('/webhook', (req, res) => {
 ※ /#bet life : 命を賭ける (8連勝した者のみ使用可能。成功で所持金+銀行が8~15倍。失敗で永久出禁)
 ※ 全てのゲームは1人から開始可能です。
 /#highlow : ハイロー募集 (/#bet [額] [high/low])
+/#crash : クラッシュ募集 (/#bet [額] [目標倍率(1.01~)])
 /#chouhan : 丁半ゲーム募集
 /#sicbo : シックボー募集 (/#bet [額] [dai/shou/any])
 /#cc : チンチロリン募集 (参加者は /#roll)
@@ -2659,7 +2777,6 @@ app.post('/webhook', (req, res) => {
                 let tMoney = targetPlayer.money || 0;
                 let tBank = targetPlayer.bank || 0;
                 let tJob = targetPlayer.job || 'サラリーマン';
-                let tKabu = targetPlayer.kabu_owned || 0;
                 let tPlays = targetPlayer.plays || 0;
                 let tWins = targetPlayer.wins || 0;
                 let tLoses = targetPlayer.loses || 0;
@@ -2671,7 +2788,7 @@ app.post('/webhook', (req, res) => {
                 const streakStr = `\n🔥 連勝記録: ${targetPlayer.win_streak || 0} 連勝`;
                 
                 let kabuStr = '';
-                if (tKabu > 0) kabuStr += `\n📦 カジノ株: ${tKabu} 株`;
+                if ((targetPlayer.kabu_owned || 0) > 0) kabuStr += `\n📦 カジノ株: ${targetPlayer.kabu_owned} 株`;
                 if (targetPlayer.stocks) {
                     let s = JSON.parse(targetPlayer.stocks);
                     for (let k in s) {
@@ -2806,13 +2923,13 @@ app.post('/webhook', (req, res) => {
                 } else return sendTempMessage(roomId, `[info]⚠️ ${makeReplyTag(senderId, roomId, msgId)} お金が足りません！[/info]`);
             }
 
-            if (body.match(/(^|\n)[/#](chouhan|cc|derby|bj|poker|yacht|sicbo|rolet|buta|daifugo|russian|highlow)\b/) && gambleActive) {
+            if (body.match(/(^|\n)[/#](chouhan|cc|derby|bj|poker|yacht|sicbo|rolet|buta|daifugo|russian|crash|highlow)\b/) && gambleActive) {
                 if (gameState[roomId]) return sendTempMessage(roomId, `[info][title]⚠️ エラー[/title]現在、別のゲームが進行中です。終了までお待ちください。[/info]`);
                 
-                let t = body.match(/(^|\n)[/#](chouhan|cc|derby|bj|poker|yacht|sicbo|rolet|buta|daifugo|russian|highlow)\b/)[2];
+                let t = body.match(/(^|\n)[/#](chouhan|cc|derby|bj|poker|yacht|sicbo|rolet|buta|daifugo|russian|crash|highlow)\b/)[2];
                 gameState[roomId] = { type: t, state: 'RECRUITING', host: senderId, players: [{ aid: senderId, bet: 0 }], spectators: [] };
                 
-                let tN = t==='derby' ? "🐎 みんなでダービー" : (t==='cc' ? "🎲 チンチロリン" : (t==='bj' ? "🃏 ブラックジャック" : (t==='poker' ? "🃏 ポーカー" : (t==='yacht' ? "🎲 ヨット" : (t==='sicbo' ? "🎲 シックボー(大小)" : (t==='rolet' ? "🎡 ルーレット" : (t==='buta' ? "🐷 豚のしっぽ" : (t==='daifugo' ? "👑 大富豪" : (t==='russian' ? "🔫 ロシアンルーレット" : (t==='highlow' ? "🃏 ハイロー" : "🎲 丁半ゲーム")))))))))); 
+                let tN = t==='derby' ? "🐎 みんなでダービー" : (t==='cc' ? "🎲 チンチロリン" : (t==='bj' ? "🃏 ブラックジャック" : (t==='poker' ? "🃏 ポーカー" : (t==='yacht' ? "🎲 ヨット" : (t==='sicbo' ? "🎲 シックボー(大小)" : (t==='rolet' ? "🎡 ルーレット" : (t==='buta' ? "🐷 豚のしっぽ" : (t==='daifugo' ? "👑 大富豪" : (t==='russian' ? "🔫 ロシアンルーレット" : (t==='crash' ? "🚀 クラッシュ" : (t==='highlow' ? "🃏 ハイロー" : "🎲 丁半ゲーム"))))))))))); 
                 let ex = `/#join`;
                 
                 if (t === 'derby') {
@@ -2904,6 +3021,8 @@ app.post('/webhook', (req, res) => {
                             let h = bM[3]; if (!h || !['dai','shou','any'].includes(h)) return sendTempMessage(roomId, `[info]⚠️ 予想(dai/shou/any)を正しく指定してください\n例: /#bet life dai[/info]`); pl.pendingChoice = h;
                         } else if (g.type === 'rolet') {
                             let h = bM[3]; if (!h || (!['red','black','even','odd','high','low'].includes(h) && (isNaN(parseInt(h)) || parseInt(h) < 0 || parseInt(h) > 36))) return sendTempMessage(roomId, `[info]⚠️ 予想を正しく指定してください\n例: /#bet life red[/info]`); pl.pendingChoice = h;
+                        } else if (g.type === 'crash') {
+                            let h = bM[3]; let tm = parseFloat(h); if (!h || isNaN(tm) || tm <= 1.00) return sendTempMessage(roomId, `[info]⚠️ 目標倍率(1.01以上)を正しく指定してください\n例: /#bet life 2.5[/info]`); pl.pendingChoice = tm.toFixed(2);
                         } else if (g.type === 'highlow') {
                             let h = bM[3]; if (!h || !['high','low'].includes(h.toLowerCase())) return sendTempMessage(roomId, `[info]⚠️ 予想(high/low)を指定してください\n例: /#bet life high[/info]`); pl.pendingChoice = h.toLowerCase();
                         }
@@ -2943,6 +3062,8 @@ app.post('/webhook', (req, res) => {
                                 let h = bM[3]; if (!h || !['dai','shou','any'].includes(h)) return sendTempMessage(roomId, `[info]⚠️ 予想(dai/shou/any)を正しく指定してください\n例: /#bet 100 dai[/info]`); pl.choice = h;
                             } else if (g.type === 'rolet') {
                                 let h = bM[3]; if (!h || (!['red','black','even','odd','high','low'].includes(h) && (isNaN(parseInt(h)) || parseInt(h) < 0 || parseInt(h) > 36))) return sendTempMessage(roomId, `[info]⚠️ 予想を正しく指定してください\n例: /#bet 100 red[/info]`); pl.choice = h;
+                            } else if (g.type === 'crash') {
+                                let h = bM[3]; let tm = parseFloat(h); if (!h || isNaN(tm) || tm <= 1.00) return sendTempMessage(roomId, `[info]⚠️ 目標倍率(1.01以上)を指定してください\n例: /#bet 100 2.5[/info]`); pl.choice = tm.toFixed(2);
                             } else if (g.type === 'highlow') {
                                 let h = bM[3]; if (!h || !['high','low'].includes(h.toLowerCase())) return sendTempMessage(roomId, `[info]⚠️ 予想(high/low)を指定してください\n例: /#bet 100 high[/info]`); pl.choice = h.toLowerCase();
                             }
@@ -3142,28 +3263,6 @@ app.post('/webhook', (req, res) => {
                                     }
                                     await editMessage(roomId, cmId, `[info]🎲 [piconname:${pl.aid}] サイコロを振り直しています...\n[ ${tempD.map(d=>`🎲${d}`).join(' ')} ][/info]`);
                                 }
-                                if (pl.futureDice) {
-                                    for (let i = 0; i < nums.length; i++) { pl.dice[nums[i]-1] = pl.futureDice[i]; }
-                                    delete pl.futureDice;
-                                } else {
-                                    nums.forEach(idx => pl.dice[idx-1] = Math.floor(Math.random() * 6) + 1);
-                                }
-                                pl.rolls++;
-                                
-                                if (pl.rolls >= 3) {
-                                    pl.status = 'stand';
-                                    let diceStr = pl.dice.map(d => `🎲${d}`).join(' ');
-                                    let ev = getYachtRank(pl.dice);
-                                    await editMessage(roomId, cmId, `[info][piconname:${pl.aid}] 3回目の振り直し完了！\n確定サイコロ: ${diceStr} (${ev.name})[/info]`);
-                                    g.turnIndex++;
-                                    await proceedNextYachtTurn(roomId);
-                                } else {
-                                    let diceStr = pl.dice.map((d, i) => `[${i+1}] 🎲${d}`).join('   ');
-                                    let ev = getYachtRank(pl.dice);
-                                    await editMessage(roomId, cmId, `[info][title]🎲 ヨット ターン継続 ( ${pl.rolls}/3 回目 )[/title][piconname:${pl.aid}]\nサイコロ: ${diceStr} (${ev.name})\n\n/#change [番号] または /#stand[/info]`);
-                                    startGameTimer(roomId, 60000);
-                                }
-                            } else {
                                 if (pl.futureDice) {
                                     for (let i = 0; i < nums.length; i++) { pl.dice[nums[i]-1] = pl.futureDice[i]; }
                                     delete pl.futureDice;
