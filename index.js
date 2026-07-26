@@ -38,6 +38,19 @@ const initRealStocks = {
     'アマゾン': { price: 18000, history: [18000], totalIssued: 0, vol: 0.13 }
 };
 
+const realStockTickers = {
+    'ディズニー': { symbol: 'DIS', curr: 'USD' },
+    '日産': { symbol: '7201.T', curr: 'JPY' },
+    'ベンツ': { symbol: 'MBG.DE', curr: 'EUR' },
+    'アップル': { symbol: 'AAPL', curr: 'USD' },
+    'ハブ': { symbol: '3030.T', curr: 'JPY' },
+    'トヨタ': { symbol: '7203.T', curr: 'JPY' },
+    'ソニー': { symbol: '6758.T', curr: 'JPY' },
+    '任天堂': { symbol: '7974.T', curr: 'JPY' },
+    'マクドナルド': { symbol: 'MCD', curr: 'USD' },
+    'アマゾン': { symbol: 'AMZN', curr: 'USD' }
+};
+
 let kabuData = { price: 3000, history: [3000], totalIssued: 0, lastUpdate: Date.now(), pendingProfit: 0, realStocks: initRealStocks };
 
 supabase.from('config').select('*').in('key', ['gamble_active', 'kabu_data']).then(r => {
@@ -96,7 +109,6 @@ const editMessage = async (roomId, messageId, text) => {
     try { await chatworkClient.put(`/rooms/${roomId}/messages/${messageId}`, `body=${encodeURIComponent(text)}`); } catch(e) {}
 };
 
-// --- 株価計算ヘルパー ---
 const calculateNetWorth = (p) => {
     let tMoney = p.money || 0;
     let tBank = p.bank || 0;
@@ -112,12 +124,30 @@ const calculateNetWorth = (p) => {
     return tMoney + tBank + totalStockValue;
 };
 
-// --- 株価更新エンジン (1時間ごとに蓄積利益で変動。最大±15%) ---
+// --- Yahoo Finance API 株価取得関数 ---
+const fetchRealTimePrice = async (symbol) => {
+    try {
+        const res = await axios.get(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+            timeout: 5000
+        });
+        if (res.data && res.data.chart && res.data.chart.result && res.data.chart.result.length > 0) {
+            return res.data.chart.result[0].meta.regularMarketPrice;
+        }
+    } catch(e) {}
+    return null;
+};
+
+// --- 株価更新エンジン ---
 const updateKabuPrice = async () => {
     let now = Date.now();
     let hoursPassed = Math.floor((now - kabuData.lastUpdate) / 3600000);
     if (hoursPassed > 0) {
         if (!kabuData.realStocks) kabuData.realStocks = initRealStocks;
+
+        // 最新の為替レートを取得
+        let usdJpy = await fetchRealTimePrice('JPY=X') || 150;
+        let eurJpy = await fetchRealTimePrice('EURJPY=X') || 160;
 
         for (let i = 0; i < hoursPassed; i++) {
             // カジノ株の変動
@@ -140,12 +170,27 @@ const updateKabuPrice = async () => {
             if (kabuData.price > 1000000) kabuData.price = 1000000;
             kabuData.history.push(kabuData.price);
 
-            // リアル株のランダム変動
+            // リアル株の変動
             for (let k in kabuData.realStocks) {
                 let s = kabuData.realStocks[k];
-                let c = (Math.random() * s.vol * 2) - s.vol; 
-                if (Math.random() < 0.1) c = (Math.random() * s.vol * 4) - (s.vol * 2);
-                s.price += Math.floor(s.price * c);
+                if (i === hoursPassed - 1) { 
+                    // 一番直近の更新タイミングでAPIから実際の価格を取得
+                    if (realStockTickers[k]) {
+                        let currentPrice = await fetchRealTimePrice(realStockTickers[k].symbol);
+                        if (currentPrice) {
+                            if (realStockTickers[k].curr === 'USD') currentPrice *= usdJpy;
+                            else if (realStockTickers[k].curr === 'EUR') currentPrice *= eurJpy;
+                            s.price = Math.floor(currentPrice);
+                        } else {
+                            // 取得失敗時はランダム変動
+                            let c = (Math.random() * s.vol * 2) - s.vol;
+                            s.price += Math.floor(s.price * c);
+                        }
+                    }
+                } else {
+                    let c = (Math.random() * s.vol * 2) - s.vol;
+                    s.price += Math.floor(s.price * c);
+                }
                 if (s.price < 10) s.price = 10;
                 s.history.push(s.price);
                 if (s.history.length > 24) s.history = s.history.slice(-24);
@@ -521,10 +566,6 @@ const handleGameTimeout = async (roomId) => {
                 let ex = `\n【 🐎 馬連オッズ 】\n${game.oddsStr}\n[hr]/#bet [額] [馬1]-[馬2] (例: /#bet 100 1-2)`;
                 await sendTempMessage(roomId, `[info][title]⏳ 募集終了・ゲーム開始[/title]参加者が確定しました。${ex}\n[hr](※制限2分。残り1分でリマインドします)[/info]`, 120000);
                 startGameTimer(roomId, 120000, true);
-            } else if (game.type === 'crash') {
-                let ex = `/#bet [額] [目標倍率(1.01以上)] (例: /#bet 100 2.5)`;
-                await sendTempMessage(roomId, `[info][title]⏳ 募集終了・ゲーム開始[/title]参加者が確定しました。\n\n${ex}\n[hr](※制限1分。 /#bet life も使えます)[/info]`);
-                startGameTimer(roomId, 60000);
             } else if (game.type === 'highlow') {
                 let ex = `/#bet [額] high か /#bet [額] low`;
                 await sendTempMessage(roomId, `[info][title]⏳ 募集終了・ゲーム開始[/title]参加者が確定しました。\n\n${ex}\n[hr](※制限1分。 /#bet life も使えます)[/info]`);
@@ -2780,6 +2821,9 @@ app.post('/webhook', (req, res) => {
             }
 
             if (body.match(/(^|\n)[/#]start\b/) && gambleActive && gameState[roomId]?.state === 'RECRUITING' && gameState[roomId].host === senderId) {
+                if (gameState[roomId].type === 'russian') {
+                    return sendTempMessage(roomId, `[info]⚠️ ロシアンルーレットでは /#start は使用できません。観戦者の参加を受け付けるため、残り時間をお待ちください。[/info]`);
+                }
                 clearTimeout(gameState[roomId].timeoutId); 
                 handleGameTimeout(roomId); 
                 return;
