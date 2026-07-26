@@ -1,4 +1,3 @@
-
 const express = require('express');
 const crypto = require('crypto');
 const axios = require('axios');
@@ -26,7 +25,20 @@ let ownerSkill = { aid: null, expire: 0 };
 
 chatworkClient.get('/me').then(res => { BOT_ACCOUNT_ID = res.data.account_id.toString(); }).catch(()=>{});
 
-let kabuData = { price: 3000, history: [3000], totalIssued: 0, lastUpdate: Date.now(), pendingProfit: 0 };
+const initRealStocks = {
+    'ディズニー': { price: 10000, history: [10000], totalIssued: 0, vol: 0.1 },
+    '日産': { price: 500, history: [500], totalIssued: 0, vol: 0.15 },
+    'ベンツ': { price: 7000, history: [7000], totalIssued: 0, vol: 0.08 },
+    'アップル': { price: 20000, history: [20000], totalIssued: 0, vol: 0.12 },
+    'ハブ': { price: 800, history: [800], totalIssued: 0, vol: 0.2 },
+    'トヨタ': { price: 3000, history: [3000], totalIssued: 0, vol: 0.05 },
+    'ソニー': { price: 13000, history: [13000], totalIssued: 0, vol: 0.09 },
+    '任天堂': { price: 8000, history: [8000], totalIssued: 0, vol: 0.11 },
+    'マクドナルド': { price: 6000, history: [6000], totalIssued: 0, vol: 0.06 },
+    'アマゾン': { price: 18000, history: [18000], totalIssued: 0, vol: 0.13 }
+};
+
+let kabuData = { price: 3000, history: [3000], totalIssued: 0, lastUpdate: Date.now(), pendingProfit: 0, realStocks: initRealStocks };
 
 supabase.from('config').select('*').in('key', ['gamble_active', 'kabu_data']).then(r => {
     if (r.data) {
@@ -36,6 +48,12 @@ supabase.from('config').select('*').in('key', ['gamble_active', 'kabu_data']).th
         if (kd) {
             let parsed = JSON.parse(kd.value);
             kabuData = { ...kabuData, ...parsed };
+            if (!kabuData.realStocks) kabuData.realStocks = initRealStocks;
+            else {
+                for (let k in initRealStocks) {
+                    if (!kabuData.realStocks[k]) kabuData.realStocks[k] = initRealStocks[k];
+                }
+            }
         }
     }
 }).catch(()=>{});
@@ -78,18 +96,36 @@ const editMessage = async (roomId, messageId, text) => {
     try { await chatworkClient.put(`/rooms/${roomId}/messages/${messageId}`, `body=${encodeURIComponent(text)}`); } catch(e) {}
 };
 
+// --- 株価計算ヘルパー ---
+const calculateNetWorth = (p) => {
+    let tMoney = p.money || 0;
+    let tBank = p.bank || 0;
+    let totalStockValue = (p.kabu_owned || 0) * kabuData.price;
+    if (p.stocks) {
+        let s = JSON.parse(p.stocks);
+        for (let k in s) {
+            if (kabuData.realStocks && kabuData.realStocks[k]) {
+                totalStockValue += s[k] * kabuData.realStocks[k].price;
+            }
+        }
+    }
+    return tMoney + tBank + totalStockValue;
+};
+
 // --- 株価更新エンジン (1時間ごとに蓄積利益で変動。最大±15%) ---
 const updateKabuPrice = async () => {
     let now = Date.now();
     let hoursPassed = Math.floor((now - kabuData.lastUpdate) / 3600000);
     if (hoursPassed > 0) {
+        if (!kabuData.realStocks) kabuData.realStocks = initRealStocks;
+
         for (let i = 0; i < hoursPassed; i++) {
+            // カジノ株の変動
             let changePercent = 0;
             if (i === 0) {
                 changePercent = ((kabuData.pendingProfit || 0) / 500000) * 0.05;
                 kabuData.pendingProfit = 0;
             }
-
             if (changePercent > 0.15) changePercent = 0.15;
             if (changePercent < -0.15) changePercent = -0.15;
 
@@ -103,6 +139,17 @@ const updateKabuPrice = async () => {
             if (kabuData.price < 100) kabuData.price = 100;
             if (kabuData.price > 1000000) kabuData.price = 1000000;
             kabuData.history.push(kabuData.price);
+
+            // リアル株のランダム変動
+            for (let k in kabuData.realStocks) {
+                let s = kabuData.realStocks[k];
+                let c = (Math.random() * s.vol * 2) - s.vol; 
+                if (Math.random() < 0.1) c = (Math.random() * s.vol * 4) - (s.vol * 2);
+                s.price += Math.floor(s.price * c);
+                if (s.price < 10) s.price = 10;
+                s.history.push(s.price);
+                if (s.history.length > 24) s.history = s.history.slice(-24);
+            }
         }
         kabuData.lastUpdate = now;
         if (kabuData.history.length > 24) kabuData.history = kabuData.history.slice(-24);
@@ -117,6 +164,7 @@ const addMoney = async (accountId, amount) => {
     let bank = p ? (p.bank || 0) : 0;
     let kabu_owned = p ? (p.kabu_owned || 0) : 0;
     let rtt = p ? (p.russian_trauma_time || 0) : 0;
+    let stocks = p ? (p.stocks || '{}') : '{}';
     
     money += amount;
 
@@ -127,7 +175,8 @@ const addMoney = async (accountId, amount) => {
             account_id: accountId, money: money, bank: bank, debt: 0, 
             slot_count: 0, work_limit: 10, msg_count: 0, job: 'サラリーマン', 
             win_streak: 0, life_bet_unlocked: false, kabu_owned: kabu_owned,
-            plays: 0, wins: 0, loses: 0, total_bet: 0, total_return: 0, russian_trauma_time: rtt
+            plays: 0, wins: 0, loses: 0, total_bet: 0, total_return: 0, russian_trauma_time: rtt,
+            stocks: stocks, last_daily_date: null
         });
     }
 };
@@ -457,13 +506,24 @@ const handleGameTimeout = async (roomId) => {
         
         if (isEnoughPlayers) {
             game.state = 'BETTING';
-            if (game.type === 'derby') {
+            
+            if (game.type === 'russian') {
+                let shuffled = [...game.players].sort(() => Math.random() - 0.5);
+                game.players = shuffled.slice(0, 2);
+                game.spectators = shuffled.slice(2).map(p => ({ aid: p.aid, bet: 0, targetAid: null }));
+
+                let specTxt = game.spectators.length > 0 ? `\n👀 観戦者(${game.spectators.length}名)の方は /#bet [額] [aid] (または返信) で勝者を予想してください！` : ``;
+                let pTxt = `🔫 プレイヤー:\n1. [piconname:${game.players[0].aid}]\n2. [piconname:${game.players[1].aid}]`;
+                
+                await sendTempMessage(roomId, `[info][title]🔫 ロシアンルーレット ベット開始[/title]抽選でプレイヤーが確定しました。\n\n${pTxt}\n\nプレイヤーは /#bet [額] を入力してください。(※相手の全財産の半分未満)\n${specTxt}\n[hr](制限1分)[/info]`);
+                startGameTimer(roomId, 60000);
+            } else if (game.type === 'derby') {
                 let ex = `\n【 🐎 馬連オッズ 】\n${game.oddsStr}\n[hr]/#bet [額] [馬1]-[馬2] (例: /#bet 100 1-2)`;
                 await sendTempMessage(roomId, `[info][title]⏳ 募集終了・ゲーム開始[/title]参加者が確定しました。${ex}\n[hr](※制限2分。残り1分でリマインドします)[/info]`, 120000);
                 startGameTimer(roomId, 120000, true);
-            } else if (game.type === 'russian') {
-                let specTxt = game.spectators && game.spectators.length > 0 ? `\n👀 観戦者の方は /#bet [額] [aid] (または返信) で勝者を予想してください！` : ``;
-                await sendTempMessage(roomId, `[info][title]🔫 ロシアンルーレット ベット開始[/title]参加者が確定しました。\n\n先に /#bet [額] を入力したプレイヤーが賭け金を決定します。\n(※相手の全財産の半分未満でなければなりません)\n\n相手は指定された金額以上を /#bet してください。${specTxt}\n[hr](制限1分)[/info]`);
+            } else if (game.type === 'crash') {
+                let ex = `/#bet [額] [目標倍率(1.01以上)] (例: /#bet 100 2.5)`;
+                await sendTempMessage(roomId, `[info][title]⏳ 募集終了・ゲーム開始[/title]参加者が確定しました。\n\n${ex}\n[hr](※制限1分。 /#bet life も使えます)[/info]`);
                 startGameTimer(roomId, 60000);
             } else if (game.type === 'highlow') {
                 let ex = `/#bet [額] high か /#bet [額] low`;
@@ -569,7 +629,6 @@ const handleGameTimeout = async (roomId) => {
                             await updatePlayerStats(spec.aid, spec.bet, winAmt, 'win');
                             specMsg += `[piconname:${spec.aid}]: 予想的中！ (+${formatNumber(winAmt)})\n`;
                         } else {
-                            await processOwnerSkill(spec.aid, spec.bet, roomId);
                             await updatePlayerStats(spec.aid, spec.bet, 0, 'lose');
                             specMsg += `[piconname:${spec.aid}]: 予想はずれ (没収)\n`;
                         }
@@ -2034,7 +2093,7 @@ app.post('/webhook', (req, res) => {
 
             let { data: player } = await supabase.from('players').select('*').eq('account_id', senderId).single();
             if (!player) {
-                player = { account_id: senderId, money: 0, bank: 0, debt: 0, last_interest_time: Date.now(), slot_count: 0, work_limit: 10, msg_count: 1, job: 'サラリーマン', daily_give_amount: 0, last_give_date: today, win_streak: 0, life_bet_unlocked: false, kabu_owned: 0, plays: 0, wins: 0, loses: 0, total_bet: 0, total_return: 0, russian_trauma_time: 0, last_daily_date: null };
+                player = { account_id: senderId, money: 0, bank: 0, debt: 0, last_interest_time: Date.now(), slot_count: 0, work_limit: 10, msg_count: 1, job: 'サラリーマン', daily_give_amount: 0, last_give_date: today, win_streak: 0, life_bet_unlocked: false, kabu_owned: 0, plays: 0, wins: 0, loses: 0, total_bet: 0, total_return: 0, russian_trauma_time: 0, last_daily_date: null, stocks: '{}' };
                 await supabase.from('players').insert(player);
             } else if (gambleActive && !body.match(/^[/#]/)) {
                 let mc = (player.msg_count || 0) + 1; 
@@ -2082,7 +2141,7 @@ app.post('/webhook', (req, res) => {
                     kabuData.pendingProfit = 0;
                     kabuData.history.push(kabuData.price);
                     await supabase.from('config').upsert({ key: 'kabu_data', value: JSON.stringify(kabuData) });
-                    return sendTempMessage(roomId, `[info][title]📈 株価強制設定[/title]管理者が株価を ${formatNumber(kabuData.price)} コインに設定しました。[/info]`);
+                    return sendTempMessage(roomId, `[info][title]📈 株価強制設定[/title]管理者がカジノ株の株価を ${formatNumber(kabuData.price)} コインに設定しました。[/info]`);
                 }
             }
 
@@ -2194,65 +2253,139 @@ app.post('/webhook', (req, res) => {
             }
 
             // --- 株機能 ---
-            if (/(^|\n)[/#]kabu\b/.test(body) && gambleActive) {
-                await updateKabuPrice(); // 1時間経っていれば更新される
-                const chartConf = {
-                    type: 'line',
-                    data: {
-                        labels: kabuData.history.map((_, i) => {
-                            let diff = kabuData.history.length - i - 1;
-                            return diff === 0 ? "最新" : `${diff}時間前`;
-                        }).reverse(),
-                        datasets: [{ label: '株価(Coin)', data: kabuData.history, borderColor: 'green', fill: false }]
-                    },
-                    options: { legend: { display: false } }
-                };
-                const chartUrl = `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartConf))}`;
-                try {
-                    const imageRes = await axios.get(chartUrl, { responseType: 'arraybuffer' });
-                    const imageBuffer = Buffer.from(imageRes.data);
-                    const formDataBoundary = '----WebKitFormBoundary7MA4YWxkTrZu0gW';
-                    let postData = `--${formDataBoundary}\r\nContent-Disposition: form-data; name="message"\r\n\r\n[info][title]📈 株式市場 (1時間ごとに変動)[/title]💰 現在の株価: ${formatNumber(kabuData.price)} コイン\n📉 市場の残り株数: ${9999 - kabuData.totalIssued} / 9999\n📦 あなたの保有数: ${player.kabu_owned || 0} 株[/info]\r\n--${formDataBoundary}\r\nContent-Disposition: form-data; name="file"; filename="kabu_chart.png"\r\nContent-Type: image/png\r\n\r\n`;
-                    const payload = Buffer.concat([ Buffer.from(postData, 'utf8'), imageBuffer, Buffer.from(`\r\n--${formDataBoundary}--\r\n`, 'utf8') ]);
-                    await axios.post(`https://api.chatwork.com/v2/rooms/${roomId}/files`, payload, {
-                        headers: { 'X-ChatWorkToken': process.env.CHATWORK_API_TOKEN, 'Content-Type': `multipart/form-data; boundary=${formDataBoundary}` }
-                    });
-                } catch(err) {
-                    sendMessage(roomId, `[info][title]📈 株式市場[/title]💰 現在の株価: ${formatNumber(kabuData.price)} コイン\n📉 市場の残り株数: ${9999 - kabuData.totalIssued} / 9999\n📦 あなたの保有数: ${player.kabu_owned || 0} 株\n(グラフ取得に失敗しました)[/info]`);
+            const kabuMatch = body.match(/(^|\n)[/#]kabu(?:\s+([^\s]+))?/);
+            if (kabuMatch && gambleActive) {
+                await updateKabuPrice();
+                let targetKabu = kabuMatch[2];
+                
+                if (!targetKabu) {
+                    let msg = `[info][title]📈 株式市場一覧 (1時間ごとに変動)[/title]`;
+                    msg += `💰 カジノ株: ${formatNumber(kabuData.price)} コイン (保有: ${player.kabu_owned || 0}株 / 残: ${9999 - kabuData.totalIssued})\n`;
+                    let myStocks = player.stocks ? JSON.parse(player.stocks) : {};
+                    if (kabuData.realStocks) {
+                        for (let k in kabuData.realStocks) {
+                            msg += `💰 ${k}: ${formatNumber(kabuData.realStocks[k].price)} コイン (保有: ${myStocks[k] || 0}株 / 残: ${9999 - kabuData.realStocks[k].totalIssued})\n`;
+                        }
+                    }
+                    msg += `[hr]※ グラフを見るには /#kabu [銘柄名] (例: /#kabu ディズニー)\n※ 買うには /#buy-kabu [銘柄名] [個数]\n※ 売るには /#sell-kabu [銘柄名] [個数|all][/info]`;
+                    return sendMessage(roomId, msg);
+                } else {
+                    let kData = null;
+                    let pOwned = 0;
+                    let pTotal = 0;
+                    let kName = targetKabu;
+                    
+                    if (targetKabu === 'カジノ株') {
+                        kData = kabuData;
+                        pOwned = player.kabu_owned || 0;
+                        pTotal = kabuData.totalIssued;
+                    } else if (kabuData.realStocks && kabuData.realStocks[targetKabu]) {
+                        kData = kabuData.realStocks[targetKabu];
+                        let myStocks = player.stocks ? JSON.parse(player.stocks) : {};
+                        pOwned = myStocks[targetKabu] || 0;
+                        pTotal = kData.totalIssued;
+                    } else {
+                        return sendTempMessage(roomId, `[info]⚠️ 銘柄「${targetKabu}」は見つかりません。[/info]`);
+                    }
+                    
+                    const chartConf = {
+                        type: 'line',
+                        data: {
+                            labels: kData.history.map((_, i) => {
+                                let diff = kData.history.length - i - 1;
+                                return diff === 0 ? "最新" : `${diff}時間前`;
+                            }).reverse(),
+                            datasets: [{ label: `${kName}(Coin)`, data: kData.history, borderColor: 'green', fill: false }]
+                        },
+                        options: { legend: { display: false } }
+                    };
+                    const chartUrl = `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartConf))}`;
+                    try {
+                        const imageRes = await axios.get(chartUrl, { responseType: 'arraybuffer' });
+                        const imageBuffer = Buffer.from(imageRes.data);
+                        const formDataBoundary = '----WebKitFormBoundary7MA4YWxkTrZu0gW';
+                        let postData = `--${formDataBoundary}\r\nContent-Disposition: form-data; name="message"\r\n\r\n[info][title]📈 ${kName} 株価チャート[/title]💰 現在の株価: ${formatNumber(kData.price)} コイン\n📉 市場の残り株数: ${9999 - pTotal} / 9999\n📦 あなたの保有数: ${pOwned} 株[/info]\r\n--${formDataBoundary}\r\nContent-Disposition: form-data; name="file"; filename="kabu_chart.png"\r\nContent-Type: image/png\r\n\r\n`;
+                        const payload = Buffer.concat([ Buffer.from(postData, 'utf8'), imageBuffer, Buffer.from(`\r\n--${formDataBoundary}--\r\n`, 'utf8') ]);
+                        await axios.post(`https://api.chatwork.com/v2/rooms/${roomId}/files`, payload, {
+                            headers: { 'X-ChatWorkToken': process.env.CHATWORK_API_TOKEN, 'Content-Type': `multipart/form-data; boundary=${formDataBoundary}` }
+                        });
+                    } catch(err) {
+                        sendMessage(roomId, `[info][title]📈 ${kName} 株価[/title]💰 現在の株価: ${formatNumber(kData.price)} コイン\n📉 市場の残り株数: ${9999 - pTotal} / 9999\n📦 あなたの保有数: ${pOwned} 株\n(グラフ取得に失敗しました)[/info]`);
+                    }
                 }
                 return;
             }
 
-            const buyKabuMatch = body.match(/(^|\n)[/#]buy-kabu\s+([0-9]+)/);
+            const buyKabuMatch = body.match(/(^|\n)[/#]buy-kabu\s+(?:([^\s0-9]+)\s+)?([0-9]+)/);
             if (buyKabuMatch && gambleActive) {
                 await updateKabuPrice();
-                let cnt = parseInt(buyKabuMatch[2], 10);
+                let kName = buyKabuMatch[2] || 'カジノ株';
+                let cnt = parseInt(buyKabuMatch[3], 10);
+                
                 if (cnt > 0) {
-                    if (kabuData.totalIssued + cnt > 9999) return sendTempMessage(roomId, `[info]⚠️ 市場に十分な株が残っていません。(残り: ${9999 - kabuData.totalIssued}株)[/info]`);
-                    let cost = kabuData.price * cnt;
-                    if (myMoney < cost) return sendTempMessage(roomId, `[info]⚠️ 所持金が足りません。(必要: ${formatNumber(cost)} コイン)[/info]`);
-                    
-                    kabuData.totalIssued += cnt;
-                    await supabase.from('config').upsert({ key: 'kabu_data', value: JSON.stringify(kabuData) });
-                    await supabase.from('players').update({ money: myMoney - cost, kabu_owned: (player.kabu_owned || 0) + cnt }).eq('account_id', senderId);
-                    
-                    return sendTempMessage(roomId, `[info]📈 [piconname:${senderId}]\n株を ${cnt} 株購入しました。(-${formatNumber(cost)} コイン)[/info]`);
+                    if (kName === 'カジノ株') {
+                        if (kabuData.totalIssued + cnt > 9999) return sendTempMessage(roomId, `[info]⚠️ 市場に十分な株が残っていません。(残り: ${9999 - kabuData.totalIssued}株)[/info]`);
+                        let cost = kabuData.price * cnt;
+                        if (myMoney < cost) return sendTempMessage(roomId, `[info]⚠️ 所持金が足りません。(必要: ${formatNumber(cost)} コイン)[/info]`);
+                        
+                        kabuData.totalIssued += cnt;
+                        await supabase.from('config').upsert({ key: 'kabu_data', value: JSON.stringify(kabuData) });
+                        await supabase.from('players').update({ money: myMoney - cost, kabu_owned: (player.kabu_owned || 0) + cnt }).eq('account_id', senderId);
+                        
+                        return sendTempMessage(roomId, `[info]📈 [piconname:${senderId}]\n${kName}を ${cnt} 株購入しました。(-${formatNumber(cost)} コイン)[/info]`);
+                    } else if (kabuData.realStocks && kabuData.realStocks[kName]) {
+                        let sData = kabuData.realStocks[kName];
+                        if (sData.totalIssued + cnt > 9999) return sendTempMessage(roomId, `[info]⚠️ 市場に十分な株が残っていません。(残り: ${9999 - sData.totalIssued}株)[/info]`);
+                        let cost = sData.price * cnt;
+                        if (myMoney < cost) return sendTempMessage(roomId, `[info]⚠️ 所持金が足りません。(必要: ${formatNumber(cost)} コイン)[/info]`);
+                        
+                        sData.totalIssued += cnt;
+                        await supabase.from('config').upsert({ key: 'kabu_data', value: JSON.stringify(kabuData) });
+                        
+                        let myStocks = player.stocks ? JSON.parse(player.stocks) : {};
+                        myStocks[kName] = (myStocks[kName] || 0) + cnt;
+                        await supabase.from('players').update({ money: myMoney - cost, stocks: JSON.stringify(myStocks) }).eq('account_id', senderId);
+                        
+                        return sendTempMessage(roomId, `[info]📈 [piconname:${senderId}]\n${kName}を ${cnt} 株購入しました。(-${formatNumber(cost)} コイン)[/info]`);
+                    } else {
+                        return sendTempMessage(roomId, `[info]⚠️ 銘柄「${kName}」は見つかりません。[/info]`);
+                    }
                 }
             }
 
-            const sellKabuMatch = body.match(/(^|\n)[/#]sell-kabu\s+(all|[0-9]+)/);
+            const sellKabuMatch = body.match(/(^|\n)[/#]sell-kabu\s+(?:(?!all\b)([^\s0-9]+)\s+)?(all|[0-9]+)/i);
             if (sellKabuMatch && gambleActive) {
                 await updateKabuPrice();
-                let cnt = sellKabuMatch[2] === 'all' ? (player.kabu_owned || 0) : parseInt(sellKabuMatch[2], 10);
-                if (cnt > 0 && (player.kabu_owned || 0) >= cnt) {
-                    let revenue = kabuData.price * cnt;
-                    kabuData.totalIssued -= cnt;
-                    await supabase.from('config').upsert({ key: 'kabu_data', value: JSON.stringify(kabuData) });
-                    await supabase.from('players').update({ kabu_owned: player.kabu_owned - cnt }).eq('account_id', senderId);
-                    await addMoney(senderId, revenue);
-                    
-                    return sendTempMessage(roomId, `[info]📉 [piconname:${senderId}]\n株を ${cnt} 株売却しました。(+${formatNumber(revenue)} コイン)[/info]`);
-                } else return sendTempMessage(roomId, `[info]⚠️ 指定した数の株を所持していません。[/info]`);
+                let kName = sellKabuMatch[2] || 'カジノ株';
+                let cntStr = sellKabuMatch[3].toLowerCase();
+                
+                if (kName === 'カジノ株') {
+                    let cnt = cntStr === 'all' ? (player.kabu_owned || 0) : parseInt(cntStr, 10);
+                    if (cnt > 0 && (player.kabu_owned || 0) >= cnt) {
+                        let revenue = kabuData.price * cnt;
+                        kabuData.totalIssued -= cnt;
+                        await supabase.from('config').upsert({ key: 'kabu_data', value: JSON.stringify(kabuData) });
+                        await supabase.from('players').update({ kabu_owned: player.kabu_owned - cnt }).eq('account_id', senderId);
+                        await addMoney(senderId, revenue);
+                        return sendTempMessage(roomId, `[info]📉 [piconname:${senderId}]\n${kName}を ${cnt} 株売却しました。(+${formatNumber(revenue)} コイン)[/info]`);
+                    } else return sendTempMessage(roomId, `[info]⚠️ 指定した数の株を所持していません。[/info]`);
+                } else if (kabuData.realStocks && kabuData.realStocks[kName]) {
+                    let myStocks = player.stocks ? JSON.parse(player.stocks) : {};
+                    let pOwned = myStocks[kName] || 0;
+                    let cnt = cntStr === 'all' ? pOwned : parseInt(cntStr, 10);
+                    if (cnt > 0 && pOwned >= cnt) {
+                        let revenue = kabuData.realStocks[kName].price * cnt;
+                        kabuData.realStocks[kName].totalIssued -= cnt;
+                        await supabase.from('config').upsert({ key: 'kabu_data', value: JSON.stringify(kabuData) });
+                        
+                        myStocks[kName] = pOwned - cnt;
+                        await supabase.from('players').update({ stocks: JSON.stringify(myStocks) }).eq('account_id', senderId);
+                        await addMoney(senderId, revenue);
+                        return sendTempMessage(roomId, `[info]📉 [piconname:${senderId}]\n${kName}を ${cnt} 株売却しました。(+${formatNumber(revenue)} コイン)[/info]`);
+                    } else return sendTempMessage(roomId, `[info]⚠️ 指定した数の株を所持していません。[/info]`);
+                } else {
+                    return sendTempMessage(roomId, `[info]⚠️ 銘柄「${kName}」は見つかりません。[/info]`);
+                }
             }
 
             const helpMatch = body.trim().match(/^[/#]help\s+([a-zA-Z]+)$/);
@@ -2281,8 +2414,9 @@ app.post('/webhook', (req, res) => {
 /#deposit [金額|max|half] : 所持金を銀行へ預け入れる
 /#withdraw [金額|max|half] : 銀行から引き出す
 /#give [金額] : 相手に送金 (税金10%, 1日最大50万まで)
-/#kabu : 株価の推移グラフを確認する (ゲーム結果により毎時間変動)
-/#buy-kabu [個数], /#sell-kabu [個数|all] : 株の売買
+/#kabu : 株式市場の一覧を見る
+/#kabu [銘柄] : 特定の銘柄のチャートを見る
+/#buy-kabu [銘柄] [個数], /#sell-kabu [銘柄] [個数|all] : 株の売買
 /#money-rank : 純資産ランキング
 /#winner-rank : 勝利数ランキング
 /#rtp-rank : RTP(回収率)ランキング
@@ -2436,12 +2570,12 @@ app.post('/webhook', (req, res) => {
                 const { data: eD } = await supabase.from('config').select('value').eq('key','rank_excluded').single(); 
                 let eI = eD ? JSON.parse(eD.value) : [];
                 const { data: ls } = await supabase.from('players').select('*'); 
-                let price = kabuData.price || 1000;
+                
                 let f = ls ? ls.filter(d => !eI.includes(d.account_id)) : [];
                 
-                f.sort((a,b) => ((b.money||0) + (b.bank||0) + ((b.kabu_owned||0)*price)) - ((a.money||0) + (a.bank||0) + ((a.kabu_owned||0)*price)));
+                f.sort((a,b) => calculateNetWorth(b) - calculateNetWorth(a));
                 let s = f.slice(0, 10).map((d, i) => {
-                    let net = (d.money||0) + (d.bank||0) + ((d.kabu_owned||0)*price); 
+                    let net = calculateNetWorth(d);
                     let md = i===0 ? "🥇" : (i===1 ? "🥈" : (i===2 ? "🥉" : "🔹")); 
                     let lastLoginStr = d.last_daily_date ? (d.last_daily_date === today ? "本日" : `${getDiffDays(d.last_daily_date, today)}日前`) : "未ログイン";
                     return `${md} ${i+1}位: [piconname:${d.account_id}] (最終: ${lastLoginStr})\n　💎 純資産: ${formatNumber(net)} コイン [${d.job||'サラリーマン'}]`;
@@ -2476,8 +2610,17 @@ app.post('/webhook', (req, res) => {
                 const remSlot = Math.max(0, 5 - (targetPlayer.slot_count || 0));
                 const bStr = `\n🏦 預金残高: ${formatNumber(tBank)} コイン`;
                 const streakStr = `\n🔥 連勝記録: ${targetPlayer.win_streak || 0} 連勝`;
-                const kabuStr = tKabu > 0 ? `\n📦 保有株: ${tKabu} 株` : '';
-                const netWorth = tMoney + tBank + (tKabu * kabuData.price);
+                
+                let kabuStr = '';
+                if (tKabu > 0) kabuStr += `\n📦 カジノ株: ${tKabu} 株`;
+                if (targetPlayer.stocks) {
+                    let s = JSON.parse(targetPlayer.stocks);
+                    for (let k in s) {
+                        if (s[k] > 0) kabuStr += `\n📦 ${k}: ${s[k]} 株`;
+                    }
+                }
+                
+                const netWorth = calculateNetWorth(targetPlayer);
                 const lastLoginStr = targetPlayer.last_daily_date ? (targetPlayer.last_daily_date === today ? "本日" : `${getDiffDays(targetPlayer.last_daily_date, today)}日前`) : "未ログイン";
 
                 let wr = tPlays ? ((tWins / tPlays) * 100).toFixed(1) : 0;
@@ -2496,13 +2639,13 @@ app.post('/webhook', (req, res) => {
                 return sendTempMessage(roomId, `[info][title]🎉 転職完了[/title][piconname:${senderId}] 様\n本日より「${jn}」としてご活躍ください！ (-${formatNumber(cs[jn])} コイン)[/info]`);
             } else if (/(^|\n)[/#]job\b/.test(body) && !body.match(/(^|\n)[/#]job\s+/) && gambleActive) {
                 return sendTempMessage(roomId, `[info][title]💼 ハローワーク (求人一覧)[/title]
-👨‍💼 サラリーマン (費用: 0)\n ▶ /work (400〜2000) ※10%でミス0
-🏛️ 公務員 (費用: 2000)\n ▶ /work (1200〜2000)
-🚓 警察官 (費用: 3000)\n ▶ /work (1200〜2800)\n ▶ /catch (30%の確率で犯人逮捕! 3200)
-⚽ プロスポーツ選手 (費用: 5000)\n ▶ /work (2000〜4000)\n ▶ /goal (30%の確率でゴール! 4000)
+👨‍💼 サラリーマン (費用: 0)\n ▶ /#work (400〜2000) ※10%でミス0
+🏛️ 公務員 (費用: 2000)\n ▶ /#work (1200〜2000)
+🚓 警察官 (費用: 3000)\n ▶ /#work (1200〜2800)\n ▶ /#catch (30%の確率で犯人逮捕! 3200)
+⚽ プロスポーツ選手 (費用: 5000)\n ▶ /#work (2000〜4000)\n ▶ /#goal (30%の確率でゴール! 4000)
 🎰 賭博師 (費用: 200,000)\n ▶ 毎日初回ログイン時にスロット回数が自動で5〜10回分増加
-👑 ギャンブルオーナー (費用: 1,000,000)\n ▶ /owner (1日1回、30分間他人のギャンブル負け金の50%を50%で回収)
-👁️ 未来人 (費用: 5,000,000)\n ▶ /next-future (1日1回、70%の確率で現在進行中のゲームの未来を予知)
+👑 ギャンブルオーナー (費用: 1,000,000)\n ▶ /#owner (1日1回、30分間他人のギャンブル負け金の50%を50%で回収)
+👁️ 未来人 (費用: 5,000,000)\n ▶ /#next-future (1日1回、70%の確率で現在進行中のゲームの未来を予知)
 [hr]※転職コマンド: /#job 役職名[/info]`);
             }
 
@@ -2620,7 +2763,7 @@ app.post('/webhook', (req, res) => {
                     gameState[roomId].st = dO.stats;
                 }
                 
-                let ruleAdd = t === 'russian' ? "\n(※プレイヤー枠は先着2名、それ以降は観戦者になります)" : "\n(※一人からでも開始可能です)";
+                let ruleAdd = t === 'russian' ? "\n(※全員で /#join 後、開始時にランダムで2名がプレイヤーになります)" : "\n(※一人からでも開始可能です)";
                 sendTempMessage(roomId, `[info][title]${tN} 募集開始[/title]ホスト: [piconname:${senderId}]\n\n参加者は ${ex} と入力！(現在 1人)\n[hr]※1分経過またはホストが /#start で進行します。${ruleAdd}[/info]`); 
                 startGameTimer(roomId); 
                 return;
@@ -2628,33 +2771,15 @@ app.post('/webhook', (req, res) => {
 
             if (body.match(/(^|\n)[/#]join\b/) && gambleActive && gameState[roomId]?.state === 'RECRUITING') {
                 let g = gameState[roomId];
-                if (g.type === 'russian') {
-                    if (!g.players.find(x => x.aid === senderId)) {
-                        if (g.players.length < 2) {
-                            g.players.push({ aid: senderId, bet: 0 });
-                            let extraMsg = g.players.length === 2 ? "\n(プレイヤー枠が埋まりました。これ以降は観戦者として参加できます)" : "";
-                            sendMessage(roomId, `[info]🙋‍♂️ [piconname:${senderId}] がプレイヤーとして参加しました！ (現在 ${g.players.length}人/2人)${extraMsg}[/info]`);
-                        } else {
-                            if (!g.spectators) g.spectators = [];
-                            if (!g.spectators.find(x => x.aid === senderId)) {
-                                g.spectators.push({ aid: senderId, bet: 0, targetAid: null });
-                                sendMessage(roomId, `[info]👀 [piconname:${senderId}] が観戦者として参加しました！ (現在 ${g.spectators.length}人)[/info]`);
-                            }
-                        }
-                    }
-                } else {
-                    if (!g.players.find(x => x.aid === senderId)) { 
-                        g.players.push({ aid: senderId, bet: 0 }); 
-                        sendMessage(roomId, `[info]🙋‍♂️ [piconname:${senderId}] が参加しました！ (現在 ${g.players.length}人)[/info]`); 
-                    }
+                if (!g.players.find(x => x.aid === senderId)) { 
+                    g.players.push({ aid: senderId, bet: 0 }); 
+                    let ex = g.type === 'russian' ? "\n※開始時にランダムで2名がプレイヤーに選ばれます" : "";
+                    sendMessage(roomId, `[info]🙋‍♂️ [piconname:${senderId}] が参加しました！ (現在 ${g.players.length}人)${ex}[/info]`); 
                 }
                 return;
             }
 
             if (body.match(/(^|\n)[/#]start\b/) && gambleActive && gameState[roomId]?.state === 'RECRUITING' && gameState[roomId].host === senderId) {
-                if (gameState[roomId].type === 'russian') {
-                    return sendTempMessage(roomId, `[info]⚠️ ロシアンルーレットでは /#start は使用できません。観戦者の参加を受け付けるため、残り時間をお待ちください。[/info]`);
-                }
                 clearTimeout(gameState[roomId].timeoutId); 
                 handleGameTimeout(roomId); 
                 return;
@@ -3080,7 +3205,4 @@ app.post('/webhook', (req, res) => {
     })();
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Run ${PORT}`));
-
-module.exports = app;
+const PORT = process.env.PORT || 30
