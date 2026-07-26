@@ -1,3 +1,4 @@
+
 const express = require('express');
 const crypto = require('crypto');
 const axios = require('axios');
@@ -127,8 +128,11 @@ const calculateNetWorth = (p) => {
 // --- Yahoo Finance API 株価取得関数 ---
 const fetchRealTimePrice = async (symbol) => {
     try {
-        const res = await axios.get(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}`, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+        const res = await axios.get(`https://query2.finance.yahoo.com/v8/finance/chart/${symbol}`, {
+            headers: { 
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': '*/*'
+            },
             timeout: 5000
         });
         if (res.data && res.data.chart && res.data.chart.result && res.data.chart.result.length > 0) {
@@ -138,7 +142,21 @@ const fetchRealTimePrice = async (symbol) => {
     return null;
 };
 
-// --- 株価更新エンジン ---
+// --- 為替API取得関数 ---
+const fetchExchangeRates = async () => {
+    try {
+        const res = await axios.get('https://open.er-api.com/v6/latest/USD', { timeout: 5000 });
+        if (res.data && res.data.rates) {
+            let usdJpy = res.data.rates.JPY;
+            let eurUsd = res.data.rates.EUR; 
+            let eurJpy = usdJpy / eurUsd;
+            return { usd: usdJpy, eur: eurJpy };
+        }
+    } catch(e) {}
+    return { usd: 150, eur: 160 }; // 取得失敗時のフォールバック
+};
+
+// --- 株価更新エンジン (1時間ごとに蓄積利益で変動。最大±15%) ---
 const updateKabuPrice = async () => {
     let now = Date.now();
     let hoursPassed = Math.floor((now - kabuData.lastUpdate) / 3600000);
@@ -146,8 +164,9 @@ const updateKabuPrice = async () => {
         if (!kabuData.realStocks) kabuData.realStocks = initRealStocks;
 
         // 最新の為替レートを取得
-        let usdJpy = await fetchRealTimePrice('JPY=X') || 150;
-        let eurJpy = await fetchRealTimePrice('EURJPY=X') || 160;
+        let rates = await fetchExchangeRates();
+        let usdJpy = rates.usd;
+        let eurJpy = rates.eur;
 
         for (let i = 0; i < hoursPassed; i++) {
             // カジノ株の変動
