@@ -3038,7 +3038,8 @@ app.post('/webhook', (req, res) => {
                 let t = body.match(/(^|\n)[/#](chouhan|cc|derby|bj|poker|yacht|sicbo|rolet|buta|daifugo|russian|crash|highlow)\b/)[2];
                 gameState[roomId] = { type: t, state: 'RECRUITING', host: senderId, players: [{ aid: senderId, bet: 0 }], spectators: [] };
                 
-                let tN = t==='derby' ? "🐎 みんなでダービー" : t==='cc' ? "🎲 チンチロリン" : t==='bj' ? "🃏 ブラックジャック" : t==='poker' ? "🃏 ポーカー" : t==='yacht' ? "🎲 ヨット" : t==='sicbo' ? "🎲 シックボー(大小)" : t==='rolet' ? "🎡 ルーレット" : t==='buta' ? "🐷 豚のしっぽ" : t==='daifugo' ? "👑 大富豪" : t==='russian' ? "🔫 ロシアンルーレット" : t==='crash' ? "🚀 クラッシュ" : t==='highlow' ? "🃏 ハイロー" : "🎲 丁半ゲーム";
+                let tN = t==='derby' ? "🐎 みんなでダービー" : (t==='cc' ? "🎲 チンチロリン" : (t==='bj' ? "🃏 ブラックジャック" : (t==='poker' ? "🃏 ポーカー" : (t==='yacht' ? "🎲 ヨット" : (t==='sicbo' ? "🎲 シックボー(大小)" : (t==='rolet' ? "🎡 ルーレット" : (t==='buta' ? "🐷 豚のしっぽ" : (t==='daifugo' ? "👑 大富豪" : (t==='russian' ? "🔫 ロシアンルーレット" : (t==='crash' ? "🚀 クラッシュ" : (t==='highlow' ? "🃏 ハイロー" : "🎲 丁半ゲーム"))))))))); 
+                let ex = `/#join`;
                 
                 if (t === 'derby') {
                     let dO = generateDerby(); 
