@@ -3205,4 +3205,7 @@ app.post('/webhook', (req, res) => {
     })();
 });
 
-const PORT = process.env.PORT || 30
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Run ${PORT}`));
+
+module.exports = app;
