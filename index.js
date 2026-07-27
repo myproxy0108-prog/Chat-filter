@@ -1,3 +1,4 @@
+
 const express = require('express');
 const crypto = require('crypto');
 const axios = require('axios');
@@ -233,16 +234,33 @@ const updateKabuPrice = async () => {
 };
 
 // --- お金・戦績管理・アイテム管理 ---
-const consumeItem = async (aid, itemName) => {
+const checkHasItem = async (aid, itemName) => {
     let { data: p } = await supabase.from('players').select('items').eq('account_id', aid).single();
     if (!p) return false;
     let items = typeof p.items === 'string' ? JSON.parse(p.items || '{}') : (p.items || {});
-    if (items[itemName] > 0) {
-        items[itemName]--;
-        await supabase.from('players').update({ items: JSON.stringify(items) }).eq('account_id', aid);
-        return true;
+    return items[itemName] > 0;
+};
+
+const tryUseItem = async (aid, itemName) => {
+    let { data: p } = await supabase.from('players').select('items, job_state').eq('account_id', aid).single();
+    if (!p) return { success: false, msg: "" };
+    
+    let items = typeof p.items === 'string' ? JSON.parse(p.items || '{}') : (p.items || {});
+    let js = typeof p.job_state === 'string' ? JSON.parse(p.job_state || '{}') : (p.job_state || {});
+
+    if (!items[itemName] || items[itemName] <= 0) return { success: false, msg: "" };
+    if (js.daily_item_used) return { success: false, msg: `(⚠️本日アイテム使用済み)` };
+
+    items[itemName]--;
+    js.daily_item_used = true;
+
+    if (Math.random() < 0.10) {
+        await supabase.from('players').update({ items: JSON.stringify(items), job_state: JSON.stringify(js) }).eq('account_id', aid);
+        return { success: false, msg: `(💣【${itemName}】使用失敗！壊れてしまった...)` };
     }
-    return false;
+
+    await supabase.from('players').update({ items: JSON.stringify(items), job_state: JSON.stringify(js) }).eq('account_id', aid);
+    return { success: true, msg: "" };
 };
 
 const addMoney = async (accountId, amount) => {
@@ -1566,12 +1584,14 @@ const processLifeBetResult = async (player, isWin, isDraw, roomId, multOverride 
         dealerProfit = 0;
     } else {
         let refunded = await processGamblerSkill(player.aid, betAmt, roomId);
+        let useRes = await tryUseItem(player.aid, '身代わりの人形');
+
         if (refunded) {
             resTxt = `💀 命賭け失敗 ➡ 🔄 逆転スキルで全額返金！(出禁回避)`;
             resType = 'draw';
             winAmt = betAmt;
             dealerProfit = 0;
-        } else if (await consumeItem(player.aid, '身代わりの人形')) {
+        } else if (useRes.success) {
             let loseAmt = Math.floor(betAmt / 2);
             await addMoney(player.aid, betAmt - loseAmt); 
             resTxt = `💀 命賭け失敗... だが【身代わりの人形】が身代わりとなり、追放を回避！(資産半分減少)`;
@@ -1581,6 +1601,7 @@ const processLifeBetResult = async (player, isWin, isDraw, roomId, multOverride 
             await supabase.from('blacklist').insert({ account_id: player.aid });
             await updateRoomMembers(roomId, [player.aid], 'readonly');
             resTxt = `💀 命賭け失敗... 永久出禁処分`;
+            if (useRes.msg) resTxt += `\n${useRes.msg}`;
             resType = 'lose';
             let g = gameState[roomId];
             if (g && g.type !== 'russian') {
@@ -1626,9 +1647,12 @@ const resolveBJ = async (roomId) => {
             else isLose = true;
         }
 
-        if (isLose && await consumeItem(player.aid, 'ディーラーの弱み')) {
-            isLose = false; isDraw = true;
-            resTxt += `😱 【ディーラーの弱み】で負けを無効化し引き分けにしました！\n`;
+        if (isLose) {
+            let useRes = await tryUseItem(player.aid, 'ディーラーの弱み');
+            if (useRes.success) {
+                isLose = false; isDraw = true;
+                resTxt += `😱 【ディーラーの弱み】で負けを無効化し引き分けにしました！\n`;
+            } else if (useRes.msg) resTxt += useRes.msg + `\n`;
         }
 
         if (player.isLifeBet) {
@@ -1644,7 +1668,10 @@ const resolveBJ = async (roomId) => {
                 totalDealerProfit += 0;
             } else if (isWin) {
                 let mult = isBJ ? 2.5 : 2;
-                if (await consumeItem(player.aid, 'ダブルアップ・コイン')) { mult *= 2; resTxt += `🪙 ダブルアップ！ `; }
+                let useRes = await tryUseItem(player.aid, 'ダブルアップ・コイン');
+                if (useRes.success) { mult *= 2; resTxt += `🪙 ダブルアップ！ `; }
+                else if (useRes.msg) resTxt += useRes.msg + ` `;
+
                 winAmt = Math.floor(player.bet * mult);
                 
                 let stolen = await processJoker(player.aid, winAmt, roomId);
@@ -1699,9 +1726,12 @@ const resolvePoker = async (roomId) => {
         let isWin = comp > 0, isDraw = comp === 0, isLose = comp < 0;
         let resTxt = "";
         
-        if (isLose && await consumeItem(player.aid, 'ディーラーの弱み')) {
-            isLose = false; isDraw = true;
-            resTxt += `😱 【ディーラーの弱み】で負けを無効化し引き分けにしました！\n`;
+        if (isLose) {
+            let useRes = await tryUseItem(player.aid, 'ディーラーの弱み');
+            if (useRes.success) {
+                isLose = false; isDraw = true;
+                resTxt += `😱 【ディーラーの弱み】で負けを無効化し引き分けにしました！\n`;
+            } else if (useRes.msg) resTxt += useRes.msg + `\n`;
         }
 
         if (player.isLifeBet) {
@@ -1717,7 +1747,10 @@ const resolvePoker = async (roomId) => {
                 totalDealerProfit += 0;
             } else if (isWin) { 
                 let mult = 2;
-                if (await consumeItem(player.aid, 'ダブルアップ・コイン')) { mult *= 2; resTxt += `🪙 ダブルアップ！ `; }
+                let useRes = await tryUseItem(player.aid, 'ダブルアップ・コイン');
+                if (useRes.success) { mult *= 2; resTxt += `🪙 ダブルアップ！ `; }
+                else if (useRes.msg) resTxt += useRes.msg + ` `;
+
                 let winAmt = Math.floor(player.bet * mult);
                 
                 let stolen = await processJoker(player.aid, winAmt, roomId);
@@ -1777,9 +1810,12 @@ const resolveYacht = async (roomId) => {
 
         let resTxt = "";
         
-        if (isLose && await consumeItem(player.aid, 'ディーラーの弱み')) {
-            isLose = false; isDraw = true;
-            resTxt += `😱 【ディーラーの弱み】で負けを無効化し引き分けにしました！\n`;
+        if (isLose) {
+            let useRes = await tryUseItem(player.aid, 'ディーラーの弱み');
+            if (useRes.success) {
+                isLose = false; isDraw = true;
+                resTxt += `😱 【ディーラーの弱み】で負けを無効化し引き分けにしました！\n`;
+            } else if (useRes.msg) resTxt += useRes.msg + `\n`;
         }
 
         if (player.isLifeBet) {
@@ -1795,7 +1831,10 @@ const resolveYacht = async (roomId) => {
                 totalDealerProfit += 0;
             } else if (isWin) { 
                 let mult = 2;
-                if (await consumeItem(player.aid, 'ダブルアップ・コイン')) { mult *= 2; resTxt += `🪙 ダブルアップ！ `; }
+                let useRes = await tryUseItem(player.aid, 'ダブルアップ・コイン');
+                if (useRes.success) { mult *= 2; resTxt += `🪙 ダブルアップ！ `; }
+                else if (useRes.msg) resTxt += useRes.msg + ` `;
+
                 let winAmt = Math.floor(player.bet * mult);
                 
                 let stolen = await processJoker(player.aid, winAmt, roomId);
@@ -1862,9 +1901,12 @@ const resolveButa = async (roomId) => {
             else isLose = true;
         }
 
-        if (isLose && await consumeItem(player.aid, 'ディーラーの弱み')) {
-            isLose = false; isDraw = true;
-            resTxt += `😱 【ディーラーの弱み】で負けを無効化し引き分けにしました！\n`;
+        if (isLose) {
+            let useRes = await tryUseItem(player.aid, 'ディーラーの弱み');
+            if (useRes.success) {
+                isLose = false; isDraw = true;
+                resTxt += `😱 【ディーラーの弱み】で負けを無効化し引き分けにしました！\n`;
+            } else if (useRes.msg) resTxt += useRes.msg + `\n`;
         }
 
         if (player.isLifeBet) {
@@ -1880,7 +1922,10 @@ const resolveButa = async (roomId) => {
                 totalDealerProfit += 0;
             } else if (isWin) {
                 let mult = 2;
-                if (await consumeItem(player.aid, 'ダブルアップ・コイン')) { mult *= 2; resTxt += `🪙 ダブルアップ！ `; }
+                let useRes = await tryUseItem(player.aid, 'ダブルアップ・コイン');
+                if (useRes.success) { mult *= 2; resTxt += `🪙 ダブルアップ！ `; }
+                else if (useRes.msg) resTxt += useRes.msg + ` `;
+
                 let winAmt = Math.floor(player.bet * mult); 
                 
                 let stolen = await processJoker(player.aid, winAmt, roomId);
@@ -1934,9 +1979,12 @@ const resolveChinchiro = async (roomId) => {
         let isLose = !isWin && !isDraw;
         let resTxt = "";
         
-        if (isLose && await consumeItem(player.aid, 'ディーラーの弱み')) {
-            isLose = false; isDraw = true;
-            resTxt += `😱 【ディーラーの弱み】で負けを無効化し引き分けにしました！\n`;
+        if (isLose) {
+            let useRes = await tryUseItem(player.aid, 'ディーラーの弱み');
+            if (useRes.success) {
+                isLose = false; isDraw = true;
+                resTxt += `😱 【ディーラーの弱み】で負けを無効化し引き分けにしました！\n`;
+            } else if (useRes.msg) resTxt += useRes.msg + `\n`;
         }
 
         if (player.isLifeBet) {
@@ -1953,7 +2001,9 @@ const resolveChinchiro = async (roomId) => {
             } else if (isWin) { 
                 let mult = r.mult > 0 ? r.mult : 1;
                 mult += 1; // 賭け金返還込み
-                if (await consumeItem(player.aid, 'ダブルアップ・コイン')) { mult *= 2; resTxt += `🪙 ダブルアップ！ `; }
+                let useRes = await tryUseItem(player.aid, 'ダブルアップ・コイン');
+                if (useRes.success) { mult *= 2; resTxt += `🪙 ダブルアップ！ `; }
+                else if (useRes.msg) resTxt += useRes.msg + ` `;
                 
                 let winAmt = Math.floor(player.bet * mult);
                 let stolen = await processJoker(player.aid, winAmt, roomId);
@@ -2014,9 +2064,12 @@ const resolveChouhan = async (roomId, mId) => {
         let isDraw = false;
         let resTxt = "";
         
-        if (isLose && await consumeItem(player.aid, 'ディーラーの弱み')) {
-            isLose = false; isDraw = true; isWin = false;
-            resTxt += `😱 【ディーラーの弱み】で負けを無効化し引き分けにしました！\n`;
+        if (isLose) {
+            let useRes = await tryUseItem(player.aid, 'ディーラーの弱み');
+            if (useRes.success) {
+                isLose = false; isDraw = true; isWin = false;
+                resTxt += `😱 【ディーラーの弱み】で負けを無効化し引き分けにしました！\n`;
+            } else if (useRes.msg) resTxt += useRes.msg + `\n`;
         }
         
         if (player.isLifeBet) {
@@ -2031,7 +2084,10 @@ const resolveChouhan = async (roomId, mId) => {
                 winAmtForStats = player.bet; resType = 'draw';
             } else if (isWin) { 
                 let mult = 2;
-                if (await consumeItem(player.aid, 'ダブルアップ・コイン')) { mult *= 2; resTxt += `🪙 ダブルアップ！ `; }
+                let useRes = await tryUseItem(player.aid, 'ダブルアップ・コイン');
+                if (useRes.success) { mult *= 2; resTxt += `🪙 ダブルアップ！ `; }
+                else if (useRes.msg) resTxt += useRes.msg + ` `;
+
                 let winAmt = Math.floor(player.bet * mult);
                 
                 let stolen = await processJoker(player.aid, winAmt, roomId);
@@ -2100,9 +2156,12 @@ const resolveSicbo = async (roomId, mId) => {
         let resTxt = "";
         let choiceName = player.choice === 'any' ? "ゾロ目" : (player.choice === 'dai' ? "大" : "小");
         
-        if (isLose && await consumeItem(player.aid, 'ディーラーの弱み')) {
-            isLose = false; isDraw = true; isWin = false;
-            resTxt += `😱 【ディーラーの弱み】で負けを無効化し引き分けにしました！\n`;
+        if (isLose) {
+            let useRes = await tryUseItem(player.aid, 'ディーラーの弱み');
+            if (useRes.success) {
+                isLose = false; isDraw = true; isWin = false;
+                resTxt += `😱 【ディーラーの弱み】で負けを無効化し引き分けにしました！\n`;
+            } else if (useRes.msg) resTxt += useRes.msg + `\n`;
         }
 
         if (player.isLifeBet) {
@@ -2116,7 +2175,10 @@ const resolveSicbo = async (roomId, mId) => {
                 await addMoney(player.aid, player.bet); 
                 winAmtForStats = player.bet; resType = 'draw';
             } else if (isWin) {
-                if (await consumeItem(player.aid, 'ダブルアップ・コイン')) { mult *= 2; resTxt += `🪙 ダブルアップ！ `; }
+                let useRes = await tryUseItem(player.aid, 'ダブルアップ・コイン');
+                if (useRes.success) { mult *= 2; resTxt += `🪙 ダブルアップ！ `; }
+                else if (useRes.msg) resTxt += useRes.msg + ` `;
+
                 let winAmt = Math.floor(player.bet * mult);
                 
                 let stolen = await processJoker(player.aid, winAmt, roomId);
@@ -2168,9 +2230,12 @@ const resolveRoulette = async (roomId, resultNum) => {
         let isDraw = false;
         let resTxt = "";
         
-        if (isLose && await consumeItem(player.aid, 'ディーラーの弱み')) {
-            isLose = false; isDraw = true; isWin = false;
-            resTxt += `😱 【ディーラーの弱み】で負けを無効化し引き分けにしました！\n`;
+        if (isLose) {
+            let useRes = await tryUseItem(player.aid, 'ディーラーの弱み');
+            if (useRes.success) {
+                isLose = false; isDraw = true; isWin = false;
+                resTxt += `😱 【ディーラーの弱み】で負けを無効化し引き分けにしました！\n`;
+            } else if (useRes.msg) resTxt += useRes.msg + `\n`;
         }
 
         if (player.isLifeBet) {
@@ -2192,7 +2257,10 @@ const resolveRoulette = async (roomId, resultNum) => {
                 const { data: pD } = await supabase.from('players').select('job').eq('account_id', player.aid).single();
                 if (mult === 2 && pD && pD.job === '数学者') mult = 2.1;
                 
-                if (await consumeItem(player.aid, 'ダブルアップ・コイン')) { mult *= 2; resTxt += `🪙 ダブルアップ！ `; }
+                let useRes = await tryUseItem(player.aid, 'ダブルアップ・コイン');
+                if (useRes.success) { mult *= 2; resTxt += `🪙 ダブルアップ！ `; }
+                else if (useRes.msg) resTxt += useRes.msg + ` `;
+
                 let winAmt = Math.floor(player.bet * mult);
                 
                 let stolen = await processJoker(player.aid, winAmt, roomId);
@@ -2262,9 +2330,12 @@ const resolveDerby = async (roomId, mId) => {
         let isDraw = false;
         let resTxt = "";
         
-        if (isLose && await consumeItem(player.aid, 'ディーラーの弱み')) {
-            isLose = false; isDraw = true; isWin = false;
-            resTxt += `😱 【ディーラーの弱み】で負けを無効化し引き分けにしました！\n`;
+        if (isLose) {
+            let useRes = await tryUseItem(player.aid, 'ディーラーの弱み');
+            if (useRes.success) {
+                isLose = false; isDraw = true; isWin = false;
+                resTxt += `😱 【ディーラーの弱み】で負けを無効化し引き分けにしました！\n`;
+            } else if (useRes.msg) resTxt += useRes.msg + `\n`;
         }
 
         if (player.isLifeBet) {
@@ -2279,7 +2350,10 @@ const resolveDerby = async (roomId, mId) => {
                 winAmtForStats = player.bet; resType = 'draw';
             } else if (isWin) { 
                 let mult = odd;
-                if (await consumeItem(player.aid, 'ダブルアップ・コイン')) { mult *= 2; resTxt += `🪙 ダブルアップ！ `; }
+                let useRes = await tryUseItem(player.aid, 'ダブルアップ・コイン');
+                if (useRes.success) { mult *= 2; resTxt += `🪙 ダブルアップ！ `; }
+                else if (useRes.msg) resTxt += useRes.msg + ` `;
+
                 let winAmt = Math.floor(player.bet * mult); 
                 
                 let stolen = await processJoker(player.aid, winAmt, roomId);
@@ -2333,9 +2407,12 @@ const resolveCrash = async (roomId, mId) => {
         let isDraw = false;
         let resTxt = "";
         
-        if (isLose && await consumeItem(player.aid, 'ディーラーの弱み')) {
-            isLose = false; isDraw = true; isWin = false;
-            resTxt += `😱 【ディーラーの弱み】で負けを無効化し引き分けにしました！\n`;
+        if (isLose) {
+            let useRes = await tryUseItem(player.aid, 'ディーラーの弱み');
+            if (useRes.success) {
+                isLose = false; isDraw = true; isWin = false;
+                resTxt += `😱 【ディーラーの弱み】で負けを無効化し引き分けにしました！\n`;
+            } else if (useRes.msg) resTxt += useRes.msg + `\n`;
         }
 
         if (player.isLifeBet) {
@@ -2350,7 +2427,10 @@ const resolveCrash = async (roomId, mId) => {
                 winAmtForStats = player.bet; resType = 'draw';
             } else if (isWin) { 
                 let mult = targetMult;
-                if (await consumeItem(player.aid, 'ダブルアップ・コイン')) { mult *= 2; resTxt += `🪙 ダブルアップ！ `; }
+                let useRes = await tryUseItem(player.aid, 'ダブルアップ・コイン');
+                if (useRes.success) { mult *= 2; resTxt += `🪙 ダブルアップ！ `; }
+                else if (useRes.msg) resTxt += useRes.msg + ` `;
+
                 let winAmt = Math.floor(player.bet * mult);
                 
                 let stolen = await processJoker(player.aid, winAmt, roomId);
@@ -2417,9 +2497,12 @@ const resolveHighLow = async (roomId, mId) => {
 
         let resTxt = "";
         
-        if (isLose && await consumeItem(player.aid, 'ディーラーの弱み')) {
-            isLose = false; isDraw = true; isWin = false;
-            resTxt += `😱 【ディーラーの弱み】で負けを無効化し引き分けにしました！\n`;
+        if (isLose) {
+            let useRes = await tryUseItem(player.aid, 'ディーラーの弱み');
+            if (useRes.success) {
+                isLose = false; isDraw = true; isWin = false;
+                resTxt += `😱 【ディーラーの弱み】で負けを無効化し引き分けにしました！\n`;
+            } else if (useRes.msg) resTxt += useRes.msg + `\n`;
         }
 
         if (player.isLifeBet) {
@@ -2435,7 +2518,10 @@ const resolveHighLow = async (roomId, mId) => {
                 totalDealerProfit += 0;
             } else if (isWin) { 
                 let mult = 2;
-                if (await consumeItem(player.aid, 'ダブルアップ・コイン')) { mult *= 2; resTxt += `🪙 ダブルアップ！ `; }
+                let useRes = await tryUseItem(player.aid, 'ダブルアップ・コイン');
+                if (useRes.success) { mult *= 2; resTxt += `🪙 ダブルアップ！ `; }
+                else if (useRes.msg) resTxt += useRes.msg + ` `;
+
                 let winAmt = Math.floor(player.bet * mult);
                 
                 let stolen = await processJoker(player.aid, winAmt, roomId);
@@ -2501,9 +2587,12 @@ const resolveDaifugo = async (roomId) => {
             let isLose = !isWin;
             let isDraw = false;
             
-            if (isLose && await consumeItem(p.aid, 'ディーラーの弱み')) {
-                isLose = false; isDraw = true; isWin = false;
-                resTxt += `😱 【ディーラーの弱み】で負けを無効化し引き分けにしました！\n`;
+            if (isLose) {
+                let useRes = await tryUseItem(p.aid, 'ディーラーの弱み');
+                if (useRes.success) {
+                    isLose = false; isDraw = true; isWin = false;
+                    resTxt += `😱 【ディーラーの弱み】で負けを無効化し引き分けにしました！\n`;
+                } else if (useRes.msg) resTxt += useRes.msg + `\n`;
             }
 
             if (p.isLifeBet) {
@@ -2518,7 +2607,10 @@ const resolveDaifugo = async (roomId) => {
                     winAmtForStats = p.bet; resType = 'draw';
                 } else if (isWin) {
                     let mult = defaultMult;
-                    if (await consumeItem(p.aid, 'ダブルアップ・コイン')) { mult *= 2; resTxt += `🪙 ダブルアップ！ `; }
+                    let useRes = await tryUseItem(p.aid, 'ダブルアップ・コイン');
+                    if (useRes.success) { mult *= 2; resTxt += `🪙 ダブルアップ！ `; }
+                    else if (useRes.msg) resTxt += useRes.msg + ` `;
+
                     let winAmt = Math.floor(p.bet * mult);
                     
                     let stolen = await processJoker(p.aid, winAmt, roomId);
@@ -2692,7 +2784,15 @@ app.post('/webhook', (req, res) => {
                 player.money = (player.money || 0) + dailyBonus;
                 player.login_streak = streak;
                 
+                player.job_state.daily_item_used = false;
+                player.job_state.daily_blackmarket_bought = false;
+                player.job_state.daily_blackmarket_found = (Math.random() < 0.01);
+                
                 let jobMsg = "";
+                if (player.job_state.daily_blackmarket_found) {
+                    jobMsg += `\n🕶️ 何やら怪しい路地裏を見つけた。今日なら【闇市】( /#blackmarket ) に入れるかもしれない...`;
+                }
+
                 let catBonus = 0;
                 if (player.items && player.items['黄金の招き猫'] > 0 && player.bank > 0) {
                     catBonus = Math.floor(player.bank * 0.005);
@@ -2724,7 +2824,8 @@ app.post('/webhook', (req, res) => {
                     login_streak: streak,
                     daily_start_networth: startNet,
                     slot_count: player.slot_count, 
-                    skill_date: player.skill_date 
+                    skill_date: player.skill_date,
+                    job_state: JSON.stringify(player.job_state)
                 }).eq('account_id', senderId);
                 
                 await sendTempMessage(roomId, `[info]🎁 デイリーボーナス！ (${streak}日連続ログイン)\n[piconname:${senderId}] 本日最初のアクションです。\n連続ログインボーナス ${formatNumber(dailyBonus)} コインを獲得！${jobMsg}[/info]`);
@@ -2785,7 +2886,7 @@ app.post('/webhook', (req, res) => {
             if (/(^|\n)[/#]shop\b/.test(body)) {
                 let msg = `[info][title]🏪 通常ショップ[/title]
 以下のアイテムを /#buy [アイテム名] で購入できます。
-・ディーラーの弱み (500万): 負けを無効化し引き分け(返金)にする
+・ディーラーの弱み (100万): 負けを無効化し引き分け(返金)にする
 ・ジョーカーの招待状 (30万): /#joker [aid] で指定。相手が次に勝った際、配当の10〜20%を横取りする
 ・ダブルアップ・コイン (10万): 次に勝った時の配当をさらに2倍にする
 ・ハズレ札の押し付け (50万): BJ/ポーカー/豚のしっぽ進行中、自分のターンに /#push で最弱カードを引き直す[/info]`;
@@ -2793,10 +2894,10 @@ app.post('/webhook', (req, res) => {
             }
 
             if (/(^|\n)[/#]blackmarket\b/.test(body)) {
-                if (Math.random() < 0.05) {
+                if (player.job_state && player.job_state.daily_blackmarket_found) {
                     let msg = `[info][title]🕶️ 闇市[/title]
 ヒッヒッヒ...よくここが見つかったな。 /#buy [アイテム名] で買えるぞ。
-・黄金の招き猫 (100万): 預金利息がさらに+0.5%加算
+・黄金の招き猫 (300万): 預金利息がさらに+0.5%加算
 ・身代わりの人形 (200万): life bet失敗時、1回だけ追放を回避し資産半分を守る
 ・デス・リバース (30万): ロシアンルーレットで撃たれた際、死を反転させて相手を道連れにする[/info]`;
                     return sendTempMessage(roomId, msg);
@@ -2807,13 +2908,20 @@ app.post('/webhook', (req, res) => {
 
             const buyMatch = body.match(/(^|\n)[/#]buy\s+(.+)/);
             if (buyMatch && gambleActive) {
+                if (gameState[roomId]) {
+                    let isPlaying = gameState[roomId].players.find(p => p.aid === senderId) || (gameState[roomId].spectators && gameState[roomId].spectators.find(p => p.aid === senderId));
+                    if (isPlaying) {
+                        return sendTempMessage(roomId, `[info]⚠️ ゲームプレイ中にアイテムを購入することはできません。[/info]`);
+                    }
+                }
+
                 let itemName = buyMatch[2].trim();
                 let prices = {
-                    'ディーラーの弱み': 5000000,
+                    'ディーラーの弱み': 1000000,
                     'ジョーカーの招待状': 300000,
                     'ダブルアップ・コイン': 100000,
                     'ハズレ札の押し付け': 500000,
-                    '黄金の招き猫': 1000000,
+                    '黄金の招き猫': 3000000,
                     '身代わりの人形': 2000000,
                     'デス・リバース': 300000
                 };
@@ -2821,8 +2929,23 @@ app.post('/webhook', (req, res) => {
                 if (!cost) return sendTempMessage(roomId, `[info]⚠️ そのアイテムは存在しません。[/info]`);
                 if (myMoney < cost) return sendTempMessage(roomId, `[info]⚠️ お金が足りません。(必要: ${formatNumber(cost)} コイン)[/info]`);
                 
+                let isBlackMarketItem = ['黄金の招き猫', '身代わりの人形', 'デス・リバース'].includes(itemName);
+
+                if (isBlackMarketItem) {
+                    if (!player.job_state.daily_blackmarket_found) return sendTempMessage(roomId, `[info]⚠️ 闇市を見つけていないため購入できません。[/info]`);
+                    if (player.job_state.daily_blackmarket_bought) return sendTempMessage(roomId, `[info]⚠️ 闇市での購入は1日1個までだ。また明日来な...[/info]`);
+                    
+                    player.job_state.daily_blackmarket_bought = true;
+                    
+                    if (Math.random() < 0.5) {
+                        await supabase.from('players').update({ money: myMoney - cost, job_state: JSON.stringify(player.job_state) }).eq('account_id', senderId);
+                        return sendTempMessage(roomId, `[info]🛍️ 【${itemName}】を購入し...
+あっ！中身は空っぽだった！詐欺られた！ (-${formatNumber(cost)} コイン)[/info]`);
+                    }
+                }
+
                 player.items[itemName] = (player.items[itemName] || 0) + 1;
-                await supabase.from('players').update({ money: myMoney - cost, items: JSON.stringify(player.items) }).eq('account_id', senderId);
+                await supabase.from('players').update({ money: myMoney - cost, items: JSON.stringify(player.items), job_state: JSON.stringify(player.job_state) }).eq('account_id', senderId);
                 
                 return sendTempMessage(roomId, `[info]🛍️ 【${itemName}】を購入しました！ (-${formatNumber(cost)} コイン)[/info]`);
             }
@@ -2839,11 +2962,15 @@ app.post('/webhook', (req, res) => {
             if (/(^|\n)[/#]joker\b/.test(body)) {
                 let target = repliedAid || (body.match(/(^|\n)[/#]joker\s+([0-9]+)/)||[])[2];
                 if (!target) return sendTempMessage(roomId, `[info]⚠️ ターゲットを指定してください。[/info]`);
-                if ((player.items['ジョーカーの招待状'] || 0) > 0) {
-                    player.items['ジョーカーの招待状']--;
-                    player.job_state.joker_target = target;
-                    await supabase.from('players').update({ items: JSON.stringify(player.items), job_state: JSON.stringify(player.job_state) }).eq('account_id', senderId);
-                    return sendTempMessage(roomId, `[info]🃏 【ジョーカーの招待状】を使用しました！\nターゲット: [piconname:${target}]\n相手が次に勝利した際、配当を横取りします。[/info]`);
+                if (await checkHasItem(senderId, 'ジョーカーの招待状')) {
+                    let useRes = await tryUseItem(senderId, 'ジョーカーの招待状');
+                    if (useRes.success) {
+                        player.job_state.joker_target = target;
+                        await supabase.from('players').update({ job_state: JSON.stringify(player.job_state) }).eq('account_id', senderId);
+                        return sendTempMessage(roomId, `[info]🃏 【ジョーカーの招待状】を使用しました！\nターゲット: [piconname:${target}]\n相手が次に勝利した際、配当を横取りします。[/info]`);
+                    } else {
+                        return sendTempMessage(roomId, `[info]${useRes.msg}[/info]`);
+                    }
                 } else {
                     return sendTempMessage(roomId, `[info]⚠️ ジョーカーの招待状を持っていません！[/info]`);
                 }
@@ -2852,24 +2979,28 @@ app.post('/webhook', (req, res) => {
             if (/(^|\n)[/#]push\b/.test(body) && gambleActive && gameState[roomId] && gameState[roomId].state === 'ACTION') {
                 let g = gameState[roomId];
                 let pl = g.players[g.turnIndex];
-                if (pl && pl.aid === senderId && pl.status === 'playing' && player.items['ハズレ札の押し付け'] > 0) {
+                if (pl && pl.aid === senderId && pl.status === 'playing') {
                     if (g.type === 'poker' || g.type === 'bj' || g.type === 'buta') {
-                        player.items['ハズレ札の押し付け']--;
-                        await supabase.from('players').update({ items: JSON.stringify(player.items) }).eq('account_id', senderId);
-                        
-                        let weakIdx = 0; let weakVal = 999;
-                        pl.hand.forEach((c, idx) => {
-                            let v = c.rank === 'A' ? 14 : (['J','Q','K'].includes(c.rank) ? [11,12,13][['J','Q','K'].indexOf(c.rank)] : parseInt(c.rank));
-                            if (v < weakVal) { weakVal = v; weakIdx = idx; }
-                        });
-                        
-                        let oldCard = pl.hand[weakIdx];
-                        let newCard = g.deck.pop();
-                        pl.hand[weakIdx] = newCard;
-                        
-                        let handStr = pl.hand.map(c => c.suit + c.rank).join(' ');
-                        await sendTempMessage(roomId, `[info]🃏 【ハズレ札の押し付け】発動！\n最弱のカード(${oldCard.suit}${oldCard.rank})を捨てて引き直しました。\n現在: ${handStr}[/info]`);
-                        return;
+                        if (await checkHasItem(senderId, 'ハズレ札の押し付け')) {
+                            let useRes = await tryUseItem(senderId, 'ハズレ札の押し付け');
+                            if (useRes.success) {
+                                let weakIdx = 0; let weakVal = 999;
+                                pl.hand.forEach((c, idx) => {
+                                    let v = c.rank === 'A' ? 14 : (['J','Q','K'].includes(c.rank) ? [11,12,13][['J','Q','K'].indexOf(c.rank)] : parseInt(c.rank));
+                                    if (v < weakVal) { weakVal = v; weakIdx = idx; }
+                                });
+                                
+                                let oldCard = pl.hand[weakIdx];
+                                let newCard = g.deck.pop();
+                                pl.hand[weakIdx] = newCard;
+                                
+                                let handStr = pl.hand.map(c => c.suit + c.rank).join(' ');
+                                await sendTempMessage(roomId, `[info]🃏 【ハズレ札の押し付け】発動！\n最弱のカード(${oldCard.suit}${oldCard.rank})を捨てて引き直しました。\n現在: ${handStr}[/info]`);
+                            } else {
+                                await sendTempMessage(roomId, `[info]${useRes.msg}[/info]`);
+                            }
+                            return;
+                        }
                     }
                 }
             }
@@ -3239,7 +3370,7 @@ app.post('/webhook', (req, res) => {
 
 【 🏪 ショップ・闇市 】
 /#shop : 通常ショップ(アイテム購入)
-/#blackmarket : 闇市(5%の確率で出現)
+/#blackmarket : 闇市(1%の確率で出現)
 /#buy [アイテム名] : アイテムを購入
 
 【 🎲 テーブルゲーム 】 (詳しいルールは /#help [ゲーム名])
@@ -3493,8 +3624,7 @@ app.post('/webhook', (req, res) => {
                 return sendTempMessage(roomId, `[info][title]👑 オーナー権限発動[/title][piconname:${senderId}]\nここから30分間、他人がギャンブルで負けた金額の50%を50%の確率で回収します...！[/info]`);
             }
 
-            if (/(^|\n)[/#]work\b/.test(body) && gambleActive) {
-                if (player.work_limit <= 0) return sendTempMessage(roomId, `[info]⚠️ ${makeReplyTag(senderId, roomId, msgId)}\n本日の仕事回数が上限(10回)に達しました。[/info]`);
+            if (/(^|\n)[/#]work\b/.test(body) && gambleActive) {if (player.work_limit <= 0) return sendTempMessage(roomId, `[info]⚠️ ${makeReplyTag(senderId, roomId, msgId)}\n本日の仕事回数が上限(10回)に達しました。[/info]`);
                 if (Date.now() - (player.last_work_time || 0) < 60000) return sendTempMessage(roomId, `[info]⚠️ ${makeReplyTag(senderId, roomId, msgId)}\n休憩中です！仕事は1分間隔で行えます。[/info]`);
                 
                 let e = 0, m = "";
@@ -3545,8 +3675,13 @@ app.post('/webhook', (req, res) => {
                     else if(r < 49.1){ ml=2; let o=["🍉","🍋","🔔","🍇","7️⃣","6️⃣","5️⃣"]; let s1=o[Math.floor(Math.random()*o.length)], s2=o[Math.floor(Math.random()*o.length)]; let a=["🍒",s1,s2].sort(()=>Math.random()-0.5); sy=a.join(" | "); res="🍒 チェリー出現！ (2倍)"; } 
                     else { ml=0; let o=["🍉","🍋","🔔","🍇","7️⃣","6️⃣","5️⃣"]; let r1=o[Math.floor(Math.random()*o.length)], r2=o[Math.floor(Math.random()*o.length)], r3=o[Math.floor(Math.random()*o.length)]; while(r1===r2&&r2===r3) r3=o[Math.floor(Math.random()*o.length)]; sy=`${r1} | ${r2} | ${r3}`; res="💀 はずれ..."; }
                     
-                    if (ml > 0 && await consumeItem(senderId, 'ダブルアップ・コイン')) {
-                        ml *= 2; res += `\n🪙 ダブルアップ！`;
+                    if (ml > 0) {
+                        let useRes = await tryUseItem(senderId, 'ダブルアップ・コイン');
+                        if (useRes.success) {
+                            ml *= 2; res += `\n🪙 ダブルアップ！`;
+                        } else if (useRes.msg) {
+                            res += `\n${useRes.msg}`;
+                        }
                     }
 
                     let wA = bet * ml; 
@@ -3837,10 +3972,13 @@ app.post('/webhook', (req, res) => {
                         let loser = pl;
                         let isReversed = false;
                         
-                        if (await consumeItem(loser.aid, 'デス・リバース')) {
+                        let useRes = await tryUseItem(loser.aid, 'デス・リバース');
+                        if (useRes.success) {
                             isReversed = true;
                             await sendMessage(roomId, `[info]🔄 【デス・リバース】発動！！！\n死の運命が反転し、[piconname:${loser.aid}] は [piconname:${winner.aid}] を道連れにした！！[/info]`);
                             await sleep(2000);
+                        } else if (useRes.msg) {
+                            await sendMessage(roomId, `[info]${useRes.msg}[/info]`);
                         }
 
                         let totalPot = g.players[0].bet + g.players[1].bet;
