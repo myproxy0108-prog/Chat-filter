@@ -1,9 +1,3 @@
-ご提示いただいた「カジノ＆ライフ」botの要件（スクラッチくじ、金曜夜のビンゴ大会、アイテムシステム、闇市、新ジョブ3種とそれに伴うスキル実装、DB追加カラム
-items および job_state への対応）を全て組み込みました。
-
-追加・修正したファイルの内容は以下の通りです。
-
---- START OF FILE Paste July 28, 2026 - 6:25AM ---
 const express = require('express');
 const crypto = require('crypto');
 const axios = require('axios');
