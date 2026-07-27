@@ -3085,14 +3085,40 @@ app.post('/webhook', (req, res) => {
                 } else return sendTempMessage(roomId, `[info]⚠️ ${makeReplyTag(senderId, roomId, msgId)} お金が足りません！[/info]`);
             }
 
-            if (body.match(/(^|\n)[/#](chouhan|cc|derby|bj|poker|yacht|sicbo|rolet|buta|daifugo|russian|crash|highlow)\b/) && gambleActive) {
-                if (gameState[roomId]) return sendTempMessage(roomId, `[info][title]⚠️ エラー[/title]現在、別のゲームが進行中です。終了までお待ちください。[/info]`);
+            // --- ゲーム募集コマンドの検知 ---
+            const gameCmdMatch = body.match(/(^|\n)[/#](chouhan|cc|derby|bj|poker|yacht|sicbo|rolet|buta|daifugo|russian|highlow)\b/);
+            if (gameCmdMatch && gambleActive) {
+                // すでにゲームが進行中なら弾く
+                if (gameState[roomId]) {
+                    return sendTempMessage(roomId, `[info][title]⚠️ エラー[/title]現在、別のゲームが進行中です。終了までお待ちください。[/info]`);
+                }
                 
-                let t = body.match(/(^|\n)[/#](chouhan|cc|derby|bj|poker|yacht|sicbo|rolet|buta|daifugo|russian|crash|highlow)\b/)[2];
-                gameState[roomId] = { type: t, state: 'RECRUITING', host: senderId, players: [{ aid: senderId, bet: 0 }], spectators: [] };
+                let t = gameCmdMatch[2]; // 検知したゲームタイプ
+                gameState[roomId] = { 
+                    type: t, 
+                    state: 'RECRUITING', 
+                    host: senderId, 
+                    players: [{ aid: senderId, bet: 0 }], 
+                    spectators: [] 
+                };
                 
-                let tN = t==='derby' ? "🐎 みんなでダービー" : t==='cc' ? "🎲 チンチロリン" : t==='bj' ? "🃏 ブラックジャック" : t==='poker' ? "🃏 ポーカー" : t==='yacht' ? "🎲 ヨット" : t==='sicbo' ? "🎲 シックボー(大小)" : t==='rolet' ? "🎡 ルーレット" : t==='buta' ? "🐷 豚のしっぽ" : t==='daifugo' ? "👑 大富豪" : t==='russian' ? "🔫 ロシアンルーレット" : t==='crash' ? "🚀 クラッシュ" : t==='highlow' ? "🃏 ハイロー" : "🎲 丁半ゲーム";
+                // ゲーム名の表示用変換（三項演算子のカッコを外してエラーを防止）
+                let tN = t==='derby' ? "🐎 みんなでダービー" : 
+                         t==='cc' ? "🎲 チンチロリン" : 
+                         t==='bj' ? "🃏 ブラックジャック" : 
+                         t==='poker' ? "🃏 ポーカー" : 
+                         t==='yacht' ? "🎲 ヨット" : 
+                         t==='sicbo' ? "🎲 シックボー(大小)" : 
+                         t==='rolet' ? "🎡 ルーレット" : 
+                         t==='buta' ? "🐷 豚のしっぽ" : 
+                         t==='daifugo' ? "👑 大富豪" : 
+                         t==='russian' ? "🔫 ロシアンルーレット" : 
+                         t==='highlow' ? "🃏 ハイロー" : "🎲 丁半ゲーム";
                 
+                let ex = `/#join`;
+                let ruleAdd = t === 'russian' ? "\n(※全員で /#join 後、開始時にランダムで2名がプレイヤーになります)" : "\n(※一人からでも開始可能です)";
+                
+                // 競馬の場合の初期化
                 if (t === 'derby') {
                     let dO = generateDerby(); 
                     gameState[roomId].oddsMap = dO.oddsMap; 
@@ -3100,12 +3126,12 @@ app.post('/webhook', (req, res) => {
                     gameState[roomId].st = dO.stats;
                 }
                 
-                let ruleAdd = t === 'russian' ? "\n(※全員で /#join 後、開始時にランダムで2名がプレイヤーになります)" : "\n(※一人からでも開始可能です)";
-                sendTempMessage(roomId, `[info][title]${tN} 募集開始[/title]ホスト: [piconname:${senderId}]\n\n参加者は ${ex} と入力！(現在 1人)\n[hr]※1分経過またはホストが /#start で進行します。${ruleAdd}[/info]`); 
+                // 【重要】ここが募集開始メッセージの表示
+                sendTempMessage(roomId, `[info][title]${tN} 募集開始[/title]ホスト: [piconname:${senderId}]\n\n参加希望者は ${ex} と入力してください！ (現在 1人)\n[hr]※1分経過またはホストが /#start と入力すると開始します。${ruleAdd}[/info]`); 
+                
                 startGameTimer(roomId); 
                 return;
             }
-
             if (body.match(/(^|\n)[/#]join\b/) && gambleActive && gameState[roomId]?.state === 'RECRUITING') {
                 let g = gameState[roomId];
                 if (!g.players.find(x => x.aid === senderId)) { 
