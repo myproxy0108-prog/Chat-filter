@@ -2894,15 +2894,31 @@ app.post('/webhook', (req, res) => {
                     if (myMoney < amt) return sendTempMessage(roomId, `[info]手持ちの所持金が不足しています。\n預金がある場合は /withdraw で手元に引き出してください。[/info]`);
                     
                     let currentGiveAmount = (player.last_give_date === today) ? (player.daily_give_amount || 0) : 0;
-                    if (currentGiveAmount + amt > 500000) return sendTempMessage(roomId, `[info][title]⚠️ 送金上限エラー[/title]1日の送金上限(500,000 コイン)を超過します！\n(本日は既に ${formatNumber(currentGiveAmount)} コイン送金しています)[/info]`);
+                    if (currentGiveAmount + amt > 1000000) return sendTempMessage(roomId, `[info][title]⚠️ 送金上限エラー[/title]1日の送金上限(1000000 コイン)を超過します！\n(本日は既に ${formatNumber(currentGiveAmount)} コイン送金しています)[/info]`);
                     
-                    let tax = Math.floor(amt * 0.10); let rAmt = amt - tax;
+                    let tax = Math.floor(amt * 0.05); let rAmt = amt - tax;
                     await supabase.from('players').update({ money: myMoney - amt, daily_give_amount: currentGiveAmount + amt, last_give_date: today }).eq('account_id', senderId);
                     await addMoney(targetAid, rAmt);
                     return sendTempMessage(roomId, `[info][title]🎁 送金完了[/title][piconname:${senderId}] ➡ [piconname:${targetAid}]\n${formatNumber(amt)} コインを送金しました。\n[hr]※システム税 10% (${formatNumber(tax)} コイン) が引かれ、相手には ${formatNumber(rAmt)} コインが届きました。[/info]`);
                 }
             }
-
+　　　　　　　if (/(^|\n)\/money-rank\b/.test(body)) {
+                const { data: eD } = await supabase.from('config').select('value').eq('key','rank_excluded').single(); 
+                let eI = eD ? JSON.parse(eD.value) : [];
+                const { data: ls } = await supabase.from('players').select('*'); 
+                let price = kabuData.price || 1000;
+                let f = ls ? ls.filter(d => !eI.includes(d.account_id)) : [];
+                
+                f.sort((a,b) => ((b.money||0) + (b.bank||0) + ((b.kabu_owned||0)*price)) - ((a.money||0) + (a.bank||0) + ((a.kabu_owned||0)*price)));
+                let s = f.slice(0, 10).map((d, i) => {
+                    let net = (d.money||0) + (d.bank||0) + ((d.kabu_owned||0)*price); 
+                    let md = i===0 ? "🥇" : (i===1 ? "🥈" : (i===2 ? "🥉" : "🔹")); 
+                    let lastLoginStr = d.last_daily_date ? (d.last_daily_date === today ? "本日" : `${getDiffDays(d.last_daily_date, today)}日前`) : "未ログイン";
+                    return `${md} ${i+1}位: [piconname:${d.account_id}] (最終: ${lastLoginStr})\n　💎 純資産: ${formatNumber(net)} コイン [${d.job||'サラリーマン'}]`;
+                }).join('\n[hr]');
+                
+                return sendTempMessage(roomId, `[info][title]👑 純資産ランキング TOP10[/title]${s}\n[hr]※5分後に自動消滅します[/info]`, 300000);
+            }
             if (/(^|\n)[/#]status\b/.test(body)) {
                 let targetPlayer = player;
                 let targetAid = senderId;
