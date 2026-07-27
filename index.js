@@ -3393,13 +3393,13 @@ app.post('/webhook', (req, res) => {
                 }
             }
 
-            if (body.match(/(^|\n)[/#]change\b/) && gambleActive && (gameState[roomId]?.type === 'poker' || gameState[roomId]?.type === 'yacht') && gameState[roomId].state === 'ACTION') {
+         if (body.match(/(^|\n)[/#]change\b/) && gambleActive && (gameState[roomId]?.type === 'poker' || gameState[roomId]?.type === 'yacht') && gameState[roomId].state === 'ACTION') {
                 let g = gameState[roomId];
                 let pl = g.players[g.turnIndex];
                 if (pl && pl.aid === senderId && pl.status === 'playing') {
-                    let match = body.match(/(^|\n)[/#]change\s+([0-9\s]+)/);
+                    let match = body.match(/^[/#]change\s+([0-9\s]+)$/);
                     if (match) {
-                        let nums = match[2].trim().split(/\s+/).map(n => parseInt(n)).filter(n => !isNaN(n) && n >= 1 && n <= 5);
+                        let nums = match[1].trim().split(/\s+/).map(n => parseInt(n)).filter(n => !isNaN(n) && n >= 1 && n <= 5);
                         
                         if (g.type === 'poker') {
                             for (let n of nums) pl.hand[n-1] = g.deck.pop();
@@ -3413,56 +3413,43 @@ app.post('/webhook', (req, res) => {
                             let cMsgRes = await chatworkClient.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(`[info]🎲 [piconname:${pl.aid}] サイコロを振り直しています...[/info]`)}`);
                             if (cMsgRes && cMsgRes.data) {
                                 let cmId = cMsgRes.data.message_id;
+                                // アニメーション
                                 for(let i=0; i<8; i++) {
                                     await sleep(300);
                                     let tempD = [...pl.dice];
-                                    nums.forEach(idx => tempD[idx-1] = Math.floor(Math.random()*6)+1);
-                                    await editMessage(roomId, cmId, `[info]🎲 [piconname:${pl.aid}] サイコロを振り直しています...\n[ ${tempD.map(d=>`🎲${d}`).join(' ')} ][/info]`);
+                                    // 変更対象（numsに含まれる番号）だけランダム表示
+                                    let animStr = tempD.map((d, idx) => {
+                                        if (nums.includes(idx + 1)) return `[ 🎲${Math.floor(Math.random() * 6) + 1} ]`;
+                                        return ` 🎲${d} `; // キープ分は固定表示
+                                    }).join('  ');
+                                    await editMessage(roomId, cmId, `[info]🎲 [piconname:${pl.aid}] サイコロを振り直しています...\n${animStr}[/info]`);
                                 }
-                                if (pl.futureDice) {
-                                    for (let i = 0; i < nums.length; i++) { pl.dice[nums[i]-1] = pl.futureDice[i]; }
-                                    delete pl.futureDice;
-                                } else {
-                                    nums.forEach(idx => pl.dice[idx-1] = Math.floor(Math.random() * 6) + 1);
-                                }
+
+                                // 実際に数値を確定
+                                nums.forEach(idx => pl.dice[idx-1] = Math.floor(Math.random() * 6) + 1);
                                 pl.rolls++;
                                 
+                                let ev = getYachtRank(pl.dice);
                                 if (pl.rolls >= 3) {
                                     pl.status = 'stand';
-                                    let diceStr = pl.dice.map(d => `🎲${d}`).join(' ');
-                                    let ev = getYachtRank(pl.dice);
-                                    await editMessage(roomId, cmId, `[info][piconname:${pl.aid}] 3回目の振り直し完了！\n確定サイコロ: ${diceStr} (${ev.name})[/info]\`);
+                                    let finalDiceStr = pl.dice.map(d => `🎲${d}`).join(' ');
+                                    await editMessage(roomId, cmId, `[info][piconname:${pl.aid}] 3回目の振り直し完了！\n確定サイコロ: ${finalDiceStr} (${ev.name})[/info]`);
                                     g.turnIndex++;
                                     await proceedNextYachtTurn(roomId);
                                 } else {
-                                    let diceStr = pl.dice.map((d, i) => `[${i+1}] 🎲${d}`).join('   ');
-                                    let ev = getYachtRank(pl.dice);
-                                    await editMessage(roomId, cmId, `[info][title]🎲 ヨット ターン継続 ( ${pl.rolls}/3 回目 )[/title][piconname:${pl.aid}]\nサイコロ: ${diceStr} (${ev.name})\n\n/#change [番号] または /#stand[/info]`);
-                                    startGameTimer(roomId, 60000);
-                                }
-                            } else {
-                                if (pl.futureDice) {
-                                    for (let i = 0; i < nums.length; i++) { pl.dice[nums[i]-1] = pl.futureDice[i]; }
-                                    delete pl.futureDice;
-                                } else {
-                                    nums.forEach(idx => pl.dice[idx-1] = Math.floor(Math.random() * 6) + 1);
-                                }
-                                pl.rolls++;
-                                if (pl.rolls >= 3) {
-                                    pl.status = 'stand';
-                                    g.turnIndex++;
-                                    await proceedNextYachtTurn(roomId);
-                                } else {
+                                    // `${}` の前後をバッククォートで確実に囲む
+                                    let currentDiceStr = pl.dice.map((d, i) => `[${i + 1}] 🎲${d}`).join('   ');
+                                    await editMessage(roomId, cmId, `[info][title]🎲 ヨット ターン継続 ( ${pl.rolls}/3 回目 )[/title][piconname:${pl.aid}]\nサイコロ: ${currentDiceStr}\n役: ${ev.name}\n\n/#change [番号] または /#stand[/info]`);
                                     startGameTimer(roomId, 60000);
                                 }
                             }
                         }
                     } else {
-                        await sendTempMessage(roomId, `[info]⚠️ 交換/振り直す番号(1〜5)を指定してください。\n例: /#change 1 3 5\nそのまま確定する場合は /#stand[/info]`);
+                        await sendTempMessage(roomId, `[info]⚠️ 番号(1〜5)を指定してください。例: /#change 1 3 5[/info]`);
                     }
                 }
+                return;
             }
-
             const isHitOrStand = /(^|\n)[/#]hit\b/.test(body) || /(^|\n)[/#]stand\b/.test(body);
             if (isHitOrStand && gambleActive && (gameState[roomId]?.type === 'bj' || gameState[roomId]?.type === 'poker' || gameState[roomId]?.type === 'yacht') && gameState[roomId].state === 'ACTION') {
                 let g = gameState[roomId];
