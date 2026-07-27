@@ -1,9 +1,4 @@
-ご提示いただいたご要望（闇市の出現率1%＆ログイン時限定＆1日1個＆50%詐欺、アイテムの /#use
-コマンド化、1日1回＆10%使用失敗、ダブルアップのコイントス化、ディーラーの弱みの50%成否、デスリバースの50%成否、招き猫の破損ギミック追加、ハズレ札の押し付け削除）をすべて実装しました。
 
-コードが長いため、分割して出力します。まずは前半部分です。
-
---- START OF FILE Paste July 28, 2026 - 6:25AM ---
 const express = require('express');
 const crypto = require('crypto');
 const axios = require('axios');
@@ -2606,8 +2601,6 @@ const resolveDaifugo = async (roomId) => {
     await sendMessage(roomId, msg + "[/info]");
     gameState[roomId] = null;
 };
-ご案内した前半部分に続き、後半のWebhook処理からのコードとなります。 ハズレ札の押し付けコマンド（/#push）の削除、アイテムの /#use
-コマンド化、闇市のログイン時判定、招き猫の破損ギミック（0.5%）などをWebhook内に組み込んでいます。
 
 // --- Webhook Endpoint ---
 app.post('/webhook', (req, res) => {
