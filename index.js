@@ -499,7 +499,7 @@ const processButler = async (earnerAid, winAmt, roomId) => {
     allP.sort((a,b) => ((b.money||0) + (b.bank||0) + ((b.kabu_owned||0)*price)) - ((a.money||0) + (a.bank||0) + ((a.kabu_owned||0)*price)));
     
     if (allP.length > 0 && allP[0].account_id.toString() === earnerAid.toString()) {
-        let reward = Math.floor(winAmt * 0.01);
+        let reward = Math.floor(winAmt * 0.003);
         if (reward <= 0) return;
         const butlers = allP.filter(p => p.job === '大富豪の執事');
         for (let b of butlers) {
