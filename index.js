@@ -334,7 +334,7 @@ const updateQuest = async (aid, key, count = 1) => {
     let { data: p } = await supabase.from('players').select('job_state').eq('account_id', aid).single();
     if (!p) return;
     let js = typeof p.job_state === 'string' ? JSON.parse(p.job_state || '{}') : (p.job_state || {});
-    if (!js.daily_quests) js.daily_quests = { work_count: 0, slot_count: 0, table_win_count: 0, silver_claimed: false, gold_claimed: false };
+    if (!js.daily_quests) js.daily_quests = { work_count: 0, slot_count: 0, table_win_count: 0, pachinko_spin_count: 0, pachinko_reach_count: 0, silver_claimed: false, gold_claimed: false };
     
     if (js.daily_quests[key] !== undefined) {
         js.daily_quests[key] += count;
@@ -388,7 +388,7 @@ const updatePlayerStats = async (accountId, betAmount, returnAmount, resultType,
     js.daily_stats.return += Math.abs(returnAmount);
 
     if (resultType === 'win' && isTableGame) {
-        if (!js.daily_quests) js.daily_quests = { work_count: 0, slot_count: 0, table_win_count: 0, silver_claimed: false, gold_claimed: false };
+        if (!js.daily_quests) js.daily_quests = { work_count: 0, slot_count: 0, table_win_count: 0, pachinko_spin_count: 0, pachinko_reach_count: 0, silver_claimed: false, gold_claimed: false };
         js.daily_quests.table_win_count++;
     }
 
@@ -509,10 +509,12 @@ const processBounty = async (loserAid, lostAmount, roomId) => {
     if (hunters) {
         for (let h of hunters) {
             let js = typeof h.job_state === 'string' ? JSON.parse(h.job_state||'{}') : (h.job_state||{});
-            if (js.bounty_target === loserAid.toString()) {
+            if (js.bounty_target === loserAid.toString() && !js.daily_bounty_used) {
                 let reward = Math.floor(lostAmount * 0.1);
                 if (reward > 0) {
                     await addMoney(h.account_id, reward);
+                    js.daily_bounty_used = true;
+                    await supabase.from('players').update({ job_state: JSON.stringify(js) }).eq('account_id', h.account_id);
                     bountyMsg += `\n🎯 (※賞金稼ぎ [piconname:${h.account_id}] に負け金の一部 ${formatNumber(reward)} コインを奪われました)`;
                 }
             }
@@ -551,11 +553,11 @@ const processButler = async (earnerAid, winAmt, roomId) => {
     let price = kabuData.price || 1000;
     allP.sort((a,b) => ((b.money||0) + (b.bank||0) + ((b.kabu_owned||0)*price)) - ((a.money||0) + (a.bank||0) + ((a.kabu_owned||0)*price)));
     
-    let top10 = allP.slice(0, 10).map(p => p.account_id.toString());
-    if (top10.includes(earnerAid.toString())) {
+    let top2 = allP.slice(0, 2).map(p => p.account_id.toString());
+    if (top2.includes(earnerAid.toString())) {
         let reward = Math.floor(winAmt * 0.001); 
         if (reward <= 0) return;
-        const butlers = allP.filter(p => p.job === '大富豪の執事');
+        const butlers = allP.filter(p => p.job === '大富豪の執事' && p.account_id.toString() !== earnerAid.toString());
         for (let b of butlers) {
             await addMoney(b.account_id, reward);
             sendMessage(roomId, `[info]🎩 執事の給料\nランキング上位の主([piconname:${earnerAid}])が稼いだため、執事の [piconname:${b.account_id}] に給料 ${formatNumber(reward)} コインが支払われました。[/info]`);
@@ -2682,7 +2684,6 @@ const resolveDaifugo = async (roomId) => {
     gameState[roomId] = null;
 };
 
-
 // --- Webhook Endpoint ---
 app.post('/webhook', (req, res) => {
     if (!verifySignature(req)) return res.status(401).send('Invalid Signature');
@@ -2845,7 +2846,8 @@ app.post('/webhook', (req, res) => {
                 player.job_state.daily_blackmarket_bought = false;
                 player.job_state.daily_blackmarket_found = (Math.random() < 0.01); // 1%で闇市出現
                 player.job_state.daily_stats = { bet: 0, return: 0 };
-                player.job_state.daily_quests = { work_count: 0, slot_count: 0, table_win_count: 0, silver_claimed: false, gold_claimed: false };
+                player.job_state.daily_bounty_used = false;
+                player.job_state.daily_quests = { work_count: 0, slot_count: 0, table_win_count: 0, pachinko_spin_count: 0, pachinko_reach_count: 0, silver_claimed: false, gold_claimed: false };
                 
                 let jobMsg = "";
                 if (player.job_state.daily_blackmarket_found) {
@@ -2895,7 +2897,7 @@ app.post('/webhook', (req, res) => {
             let myJob = player ? (player.job || 'サラリーマン') : 'サラリーマン';
 
             // トラウマチェック
-            const isGameCmd = body.match(/(^|\n)[/#](chouhan|cc|derby|bj|poker|yacht|sicbo|rolet|buta|daifugo|russian|crash|highlow)\b/);
+            const isGameCmd = body.match(/(^|\n)[/#](chouhan|cc|derby|bj|poker|yacht|sicbo|rolet|buta|daifugo|russian|crash|highlow|pachinko)\b/);
             const isJoinCmd = body.match(/(^|\n)[/#]join\b/);
             const isBetCmd = body.match(/(^|\n)[/#]bet\s+(max|half|life|[0-9.]+)/);
             if ((isGameCmd || isJoinCmd || isBetCmd) && gambleActive) {
@@ -2918,7 +2920,7 @@ app.post('/webhook', (req, res) => {
             // --- デイリークエスト機能 ---
             if (/(^|\n)[/#]quest\b/.test(body)) {
                 let js = player.job_state;
-                if (!js.daily_quests) js.daily_quests = { work_count: 0, slot_count: 0, table_win_count: 0, silver_claimed: false, gold_claimed: false };
+                if (!js.daily_quests) js.daily_quests = { work_count: 0, slot_count: 0, table_win_count: 0, pachinko_spin_count: 0, pachinko_reach_count: 0, silver_claimed: false, gold_claimed: false };
                 let dq = js.daily_quests;
                 
                 let q1 = dq.work_count >= 3;
@@ -2927,16 +2929,20 @@ app.post('/webhook', (req, res) => {
                 let q4 = dq.slot_count >= 3;
                 let q5 = dq.table_win_count >= 1;
                 let q6 = dq.table_win_count >= 5;
+                let q7 = dq.pachinko_spin_count >= 10;
+                let q8 = dq.pachinko_reach_count >= 1;
 
-                let completedCount = [q1,q2,q3,q4,q5,q6].filter(x => x).length;
+                let completedCount = [q1,q2,q3,q4,q5,q6,q7,q8].filter(x => x).length;
                 let msg = `[info][title]📜 今日のデイリークエスト[/title]`;
                 msg += `[ ${q1 ? '✅' : '　'} ] 仕事を3回する (${Math.min(dq.work_count,3)}/3)\n`;
                 msg += `[ ${q2 ? '✅' : '　'} ] 仕事を10回する (${Math.min(dq.work_count,10)}/10)\n`;
                 msg += `[ ${q3 ? '✅' : '　'} ] スロットを1回する (${Math.min(dq.slot_count,1)}/1)\n`;
                 msg += `[ ${q4 ? '✅' : '　'} ] スロットを3回する (${Math.min(dq.slot_count,3)}/3)\n`;
-                msg += `[ ${q5 ? '✅' : '　'} ] テーブルゲームで1回勝つ (${Math.min(dq.table_win_count,1)}/1)\n`;
-                msg += `[ ${q6 ? '✅' : '　'} ] テーブルゲームで5回勝つ (${Math.min(dq.table_win_count,5)}/5)\n`;
-                msg += `[hr]🏆 クリア状況: ${completedCount} / 6 個\n\n`;
+                msg += `[ ${q5 ? '✅' : '　'} ] テーブルGで1回勝つ (${Math.min(dq.table_win_count,1)}/1)\n`;
+                msg += `[ ${q6 ? '✅' : '　'} ] テーブルGで5回勝つ (${Math.min(dq.table_win_count,5)}/5)\n`;
+                msg += `[ ${q7 ? '✅' : '　'} ] パチンコで10回転 (${Math.min(dq.pachinko_spin_count,10)}/10)\n`;
+                msg += `[ ${q8 ? '✅' : '　'} ] パチンコでリーチを見る (${Math.min(dq.pachinko_reach_count,1)}/1)\n`;
+                msg += `[hr]🏆 クリア状況: ${completedCount} / 8 個\n\n`;
 
                 let getMoney = 0;
                 let getMsg = "";
@@ -2946,7 +2952,7 @@ app.post('/webhook', (req, res) => {
                     getMsg += `\n🥈 銀のデイリーボーナス (10,000 コイン) を獲得しました！`;
                     addBadge(senderId, 'クエスト見習い');
                 }
-                if (completedCount >= 6 && !dq.gold_claimed) {
+                if (completedCount >= 8 && !dq.gold_claimed) {
                     getMoney += 50000;
                     dq.gold_claimed = true;
                     getMsg += `\n🥇 金のデイリーボーナス (50,000 コイン) を獲得しました！`;
@@ -2963,6 +2969,131 @@ app.post('/webhook', (req, res) => {
                 }
 
                 return sendTempMessage(roomId, msg + `[/info]`);
+            }
+
+            // --- パチンコ ---
+            if (/(^|\n)[/#]pachinko\s+([0-9]+)/.test(body) && gambleActive) {
+                let amt = parseInt(body.match(/(^|\n)[/#]pachinko\s+([0-9]+)/)[2], 10);
+                if (amt < 500) return sendTempMessage(roomId, `[info]⚠️ 最低賭け金は 500 コインです。[/info]`);
+                if (myMoney < amt) return sendTempMessage(roomId, `[info]⚠️ お金が足りません！[/info]`);
+                
+                let balls = Math.floor(amt / 4);
+                if (balls <= 0) return sendTempMessage(roomId, `[info]⚠️ 玉を借りられません。[/info]`);
+                
+                myMoney -= amt;
+                let updates = { money: myMoney };
+                
+                let entryRate = myJob === 'パチプロ' ? 0.07 : 0.05;
+                if (player.job_state.lucky_kugi_active) {
+                    entryRate = 1.0;
+                    player.job_state.lucky_kugi_active = false;
+                    updates.job_state = JSON.stringify(player.job_state);
+                }
+                await supabase.from('players').update(updates).eq('account_id', senderId);
+
+                let spins = 0;
+                for (let i = 0; i < balls; i++) {
+                    if (Math.random() < entryRate) spins++;
+                }
+
+                await updateQuest(senderId, 'pachinko_spin_count', spins);
+                await updatePlayerStats(senderId, amt, 0, 'draw', false);
+
+                let msgRes = await chatworkClient.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(`[info][title]🎰 パチンコ[/title][piconname:${senderId}]\n投入: ${formatNumber(amt)} コイン (${balls}玉)\n入賞率(釘): ${Math.floor(entryRate*100)}%\n\n玉を打ち出しています...[/info]`)}`);
+                let mId = msgRes?.data?.message_id;
+                
+                if (spins === 0) {
+                    if (mId) await editMessage(roomId, mId, `[info][title]🎰 パチンコ[/title][piconname:${senderId}]\n投入: ${formatNumber(amt)} コイン (${balls}玉)\n入賞率(釘): ${Math.floor(entryRate*100)}%\n\n全然回らねぇ！玉はすべて吸い込まれた... (0回転)\n\n💀 獲得: 0 コイン[/info]`);
+                    return;
+                }
+
+                let results = [];
+                for(let i=0; i<spins; i++) {
+                    let isHit = Math.random() < (1/99);
+                    let reach = false;
+                    let reachType = null;
+                    let reserve = '⚪';
+                    if(isHit) {
+                        reach = true;
+                        let r = Math.random();
+                        if(r < 0.6) { reachType = 'ストーリー'; reserve = '🔥'; }
+                        else if(r < 0.9) { reachType = 'キャラ'; reserve = '🔴'; }
+                        else { reachType = 'ノーマル'; reserve = '🔵'; }
+                    } else {
+                        if(Math.random() < 0.10) { 
+                            reach = true;
+                            let r = Math.random();
+                            if(r < 0.05) { reachType = 'ストーリー'; reserve = '🔴'; }
+                            else if(r < 0.25) { reachType = 'キャラ'; reserve = '🔵'; }
+                            else { reachType = 'ノーマル'; reserve = '🔵'; }
+                        }
+                    }
+                    results.push({ isHit, reach, reachType, reserve });
+                    if (isHit) break; 
+                }
+
+                let displaySpins = 0;
+                let currentMsg = `[info][title]🎰 パチンコ[/title][piconname:${senderId}]\n投入: ${formatNumber(amt)} コイン\n`;
+                let hitFound = false;
+                
+                for (let r of results) {
+                    displaySpins++;
+                    if (r.reach) {
+                        await updateQuest(senderId, 'pachinko_reach_count', 1);
+                        if (mId) {
+                            await editMessage(roomId, mId, currentMsg + `\n${displaySpins}回転目... 保留変化！ [ ${r.reserve} ]\n[/info]`);
+                            await sleep(1500);
+                            let rName = r.reachType === 'ストーリー' ? '[title]激熱[/title] ストーリーリーチ！' : `${r.reachType}リーチ`;
+                            await editMessage(roomId, mId, currentMsg + `\n${displaySpins}回転目... 保留[ ${r.reserve} ]\n🚨 リーチ発生！ (${rName})\n[/info]`);
+                            await sleep(2500);
+                            if (r.isHit) {
+                                await editMessage(roomId, mId, currentMsg + `\n${displaySpins}回転目... 保留[ ${r.reserve} ]\n🚨 リーチ発生！ (${rName})\n\n🎯 大当たり！！！\n[/info]`);
+                                hitFound = true;
+                                break;
+                            } else {
+                                await editMessage(roomId, mId, currentMsg + `\n${displaySpins}回転目... 保留[ ${r.reserve} ]\n🚨 リーチ発生！ (${rName})\n\n❌ ハズレ...\n[/info]`);
+                                await sleep(1000);
+                            }
+                        }
+                    }
+                }
+
+                if (!hitFound) {
+                    if (mId) await editMessage(roomId, mId, currentMsg + `\n計 ${spins} 回転したが、大当たりは引けなかった...\n\n💀 獲得: 0 コイン[/info]`);
+                    return;
+                }
+
+                if (mId) {
+                    await sleep(1500);
+                    await editMessage(roomId, mId, currentMsg + `\n🎯 大当たり！！！\n\n⚡ RUSH突入！ (継続率80%)[/info]`);
+                    await sleep(2000);
+                }
+
+                let streak = 1;
+                let rushPayout = 4000;
+                while (Math.random() < 0.80) {
+                    streak++;
+                    rushPayout += Math.floor(Math.random() * 2000) + 3000;
+                }
+                
+                let js = player.job_state || {};
+                let maxStreak = js.pachinko_max_streak || 0;
+                if (streak > maxStreak) {
+                    js.pachinko_max_streak = streak;
+                    await supabase.from('players').update({ job_state: JSON.stringify(js) }).eq('account_id', senderId);
+                }
+
+                let { stolen, jokerMsg } = await processJoker(senderId, rushPayout, roomId);
+                let finalWin = rushPayout - stolen;
+
+                await addMoney(senderId, finalWin);
+                await updatePlayerStats(senderId, amt, rushPayout, 'win', true);
+                await processButler(senderId, rushPayout, roomId);
+
+                if (mId) {
+                    await editMessage(roomId, mId, currentMsg + `\n🎯 大当たり！！！\n⚡ RUSH終了\n\n🔥 ${streak} 連チャン！\n💰 獲得: ${formatNumber(finalWin)} コイン${jokerMsg}[/info]`);
+                }
+                return;
             }
 
             // --- スクラッチくじ ---
@@ -3059,7 +3190,6 @@ app.post('/webhook', (req, res) => {
                     player.job_state.daily_item_used = true;
                     await supabase.from('players').update({ items: JSON.stringify(player.items), job_state: JSON.stringify(player.job_state) }).eq('account_id', senderId);
                     
-                    // 自分をターゲットにしている賞金稼ぎやジョーカーを解除する
                     const { data: allPlayers } = await supabase.from('players').select('account_id, job_state');
                     let removedCount = 0;
                     if (allPlayers) {
@@ -3075,6 +3205,12 @@ app.post('/webhook', (req, res) => {
                         }
                     }
                     return sendTempMessage(roomId, `[info]💨 【目眩し弾薬】を使用した！\n煙幕に紛れ、自分を狙っていた賞金稼ぎやジョーカーのターゲット設定を ${removedCount} 件 解除しました！[/info]`);
+                } else if (itemName === 'ラッキー釘') {
+                    player.items[itemName]--;
+                    player.job_state.daily_item_used = true;
+                    player.job_state.lucky_kugi_active = true;
+                    await supabase.from('players').update({ items: JSON.stringify(player.items), job_state: JSON.stringify(player.job_state) }).eq('account_id', senderId);
+                    return sendTempMessage(roomId, `[info]🔨 【ラッキー釘】を使用しました！\n次回の /#pachinko で入賞率が 100% になります。[/info]`);
                 } else {
                     return sendTempMessage(roomId, `[info]⚠️ そのアイテムは /#use コマンドで手動使用するものではありません。[/info]`);
                 }
@@ -3087,7 +3223,8 @@ app.post('/webhook', (req, res) => {
 ・ディーラーの弱み (100万): /#use で使うと50%成功。次の負けを無効化し引き分けにする
 ・ジョーカーの招待状 (30万): /#joker [aid] で指定。相手が次に勝った際、配当の10〜20%を横取りする
 ・ダブルアップ・コイン (10万): /#use でコイントスが始まり表裏を予測。次勝った時当たれば配当2倍
-・目眩し弾薬 (5万): /#use で使うと、自分を狙っている賞金稼ぎやジョーカーのターゲット設定を強制解除する[/info]`;
+・目眩し弾薬 (5万): /#use で使うと、自分を狙っている賞金稼ぎやジョーカーのターゲット設定を強制解除する
+・ラッキー釘 (5万): /#use で使うと、次回のパチンコの入賞率が100%になる[/info]`;
                 return sendTempMessage(roomId, msg);
             }
 
@@ -3119,6 +3256,7 @@ app.post('/webhook', (req, res) => {
                     'ジョーカーの招待状': 300000,
                     'ダブルアップ・コイン': 100000,
                     '目眩し弾薬': 50000,
+                    'ラッキー釘': 50000,
                     '黄金の招き猫': 3000000,
                     '身代わりの人形': 2000000,
                     'デス・リバース': 300000
@@ -3502,6 +3640,7 @@ app.post('/webhook', (req, res) => {
                 else if (g === 'daifugo') txt = `[title]👑 大富豪のルール[/title]各プレイヤーに個別の「手札部屋」が作られます。\n手札部屋から /#play S3 や /#play H4 D4 のように出して進行します。\n出せない場合は /#pass してください。\n【特殊ルール】8切り、革命、イレブンバック\n【配当】1位(大富豪): 3倍、2位(富豪): 1.5倍、それ以外は没収。`;
                 else if (g === 'crash') txt = `[title]🚀 クラッシュのルール[/title]ゲームが始まると倍率が 1.00x からどんどん上昇していきますが、ランダムなタイミングで爆発(クラッシュ)します。\nあらかじめ「目標倍率」を設定しておき、その倍率に到達する前にクラッシュしなければ利確成功となります。\n(参加例: /#bet 1000 2.5 と打つと、2.5倍に到達で勝利。それより前にクラッシュすると没収。)`;
                 else if (g === 'highlow') txt = `[title]🃏 ハイローのルール[/title]ディーラーが2枚のカード(1〜13)を引き、2枚目のカードが1枚目より大きい(high)か、小さい(low)かを当てるゲームです。\n(参加例: /#bet 1000 high )\n【配当】予想的中なら 賭け金×2。同数だった場合はDraw(返金)となります。`;
+                else if (g === 'pachinko') txt = `[title]🎰 パチンコのルール[/title]玉を打ち出し、釘を抜けてヘソに入賞するとデジタルが回転します。\n/#pachinko [金額] で遊びます(1玉4コイン)。\n釘の良し悪しで回転率が変動し、リーチ演出を経て大当たりを狙います。\n大当たり時は継続率80%の「RUSH」に突入し、一気に数万コインを獲得できます！`;
                 else txt = `指定されたゲームのルールは見つかりませんでした。`;
                 return sendTempMessage(roomId, `[info]${txt}[/info]`, 120000);
             }
@@ -3531,13 +3670,14 @@ app.post('/webhook', (req, res) => {
 /#work : 職業給料 (1分に1回, 1日10回上限)
 /#owner : [ギャンブルオーナー] 30分間、他人の負け金を回収 (1日1回)
 /#next-future : [未来人] ゲーム結果を予知 (1日1回)
-/#bounty [aid] : [賞金稼ぎ] ターゲットが次に負けた際、負け金の10%を奪う
-※ [賭博師]、[逆転のギャンブラー]、[銀行員]、[大富豪の執事]、[数学者] は自動スキルです。
+/#bounty [aid] : [賞金稼ぎ] ターゲットが次に負けた際、負け金の10%を奪う (1日1回)
+※ [賭博師]、[パチプロ]、[逆転のギャンブラー]、[銀行員]、[大富豪の執事]、[数学者] は自動スキルです。
 /#omikuji : 1日1回おみくじ (スロット確率変動)
 
 【 🎰 カジノ・宝くじ 】
 /#slot [掛金|max|half] : スロット (最大ベット 999万)
 /#scratch [掛金] : 一人完結型スクラッチくじ。最大配当50倍。
+/#pachinko [金額] : パチンコ遊技。釘を抜けRUSHを狙え！
 
 【 🏪 ショップ・闇市・アイテム 】
 /#shop : 通常ショップ(アイテム購入)
@@ -3723,6 +3863,10 @@ app.post('/webhook', (req, res) => {
                 const bStr = `\n🏦 預金残高: ${formatNumber(tBank)} コイン`;
                 const streakStr = `\n🔥 連勝記録: ${targetPlayer.win_streak || 0} 連勝`;
                 
+                let js = targetPlayer.job_state || {};
+                let pMaxStreak = js.pachinko_max_streak || 0;
+                const pStreakStr = pMaxStreak > 0 ? `\n🎰 パチンコ最高連チャン数: ${pMaxStreak} 回` : "";
+
                 let kabuStr = '';
                 if ((targetPlayer.kabu_owned || 0) > 0) kabuStr += `\n📦 カジノ株: ${targetPlayer.kabu_owned} 株`;
                 if (targetPlayer.stocks) {
@@ -3745,9 +3889,7 @@ app.post('/webhook', (req, res) => {
                 }
 
                 let targetMsg = "";
-                let js = targetPlayer.job_state || {};
                 
-                // 賞金稼ぎに狙われているかの確認 (自分が対象かどうかを全ユーザーから検索)
                 const { data: allP } = await supabase.from('players').select('account_id, job_state');
                 if (allP) {
                     for (let op of allP) {
@@ -3768,16 +3910,16 @@ app.post('/webhook', (req, res) => {
                 let rtp = tTotalBet ? ((tTotalReturn / tTotalBet) * 100).toFixed(1) : 0;
                 const statsStr = `\n⚔️ 戦績: ${tPlays}戦 / ${tWins}勝 / ${tLoses}敗\n📈 勝率: ${wr}% / 💹 RTP: ${rtp}%`;
 
-                return sendTempMessage(roomId, `[info][title]📊 プレイヤー情報[/title][piconname:${targetAid}] 様 (最終ログイン: ${lastLoginStr})\n\n💰 所持金: ${formatNumber(tMoney)} コイン${bStr}${kabuStr}\n💎 純資産: ${formatNumber(netWorth)} コイン${streakStr}${statsStr}\n[hr]👔 職業: ${tJob}\n🎰 スロット残り: ${remSlot} 回\n💼 お仕事残り: ${targetPlayer.work_limit || 0} 回\n⛩️ 今日の運勢: ${targetPlayer.omikuji_result || '未引'}${targetMsg}${itemStr}\n[hr]※1分後に自動消去されます[/info]`);
+                return sendTempMessage(roomId, `[info][title]📊 プレイヤー情報[/title][piconname:${targetAid}] 様 (最終ログイン: ${lastLoginStr})\n\n💰 所持金: ${formatNumber(tMoney)} コイン${bStr}${kabuStr}\n💎 純資産: ${formatNumber(netWorth)} コイン${streakStr}${pStreakStr}${statsStr}\n[hr]👔 職業: ${tJob}\n🎰 スロット残り: ${remSlot} 回\n💼 お仕事残り: ${targetPlayer.work_limit || 0} 回\n⛩️ 今日の運勢: ${targetPlayer.omikuji_result || '未引'}${targetMsg}${itemStr}\n[hr]※1分後に自動消去されます[/info]`);
             }
 
-            const cJobMatch = body.match(/(^|\n)[/#]job\s+(サラリーマン|公務員|警察官|プロスポーツ選手|賭博師|ギャンブルオーナー|未来人|逆転のギャンブラー|銀行員|大富豪の執事|賞金稼ぎ|数学者)/);
+            const cJobMatch = body.match(/(^|\n)[/#]job\s+(サラリーマン|公務員|警察官|プロスポーツ選手|賭博師|ギャンブルオーナー|未来人|逆転のギャンブラー|銀行員|大富豪の執事|賞金稼ぎ|数学者|パチプロ)/);
             if (cJobMatch && gambleActive) {
                 const jn = cJobMatch[2]; const cs = {
                     'サラリーマン': 0, '公務員': 2000, '警察官': 3000, 'プロスポーツ選手': 5000, 
                     '賭博師': 200000, 'ギャンブルオーナー': 1000000, '未来人': 5000000,
                     '逆転のギャンブラー': 1000000, '銀行員': 1000000, '大富豪の執事': 400000,
-                    '賞金稼ぎ': 10000, '数学者': 50000
+                    '賞金稼ぎ': 10000, '数学者': 50000, 'パチプロ': 50000
                 };
                 if (myJob === jn) return sendTempMessage(roomId, `[info]⚠️ ${makeReplyTag(senderId, roomId, msgId)}\nすでに ${jn} に就いています！[/info]`);
                 if (myMoney < cs[jn]) return sendTempMessage(roomId, `[info]⚠️ ${makeReplyTag(senderId, roomId, msgId)}\nお金が足りません！(転職費用: ${formatNumber(cs[jn])} コイン)[/info]`);
@@ -3792,11 +3934,12 @@ app.post('/webhook', (req, res) => {
 🎰 賭博師 (費用: 200,000)\n ▶ 毎日初回ログイン時にスロット回数が自動で5〜10回分増加
 👑 ギャンブルオーナー (費用: 1,000,000)\n ▶ /#owner (1日1回、30分間他人のギャンブル負け金の50%を50%で回収)
 👁️ 未来人 (費用: 5,000,000)\n ▶ /#next-future (1日1回、70%の確率で現在進行中のゲームの未来を予知)
-🔄 逆転のギャンブラー (費用: 1,000,000)\n ▶ ギャンブルに負けた時、RTPが低いと80%の確率で賭け金が戻ってくる
+🔄 逆転のギャンブラー (費用: 1,000,000)\n ▶ デイリーRTPが低いと、ギャンブルに負けた時80%の確率で賭け金が戻ってくる
 🏦 銀行員 (費用: 1,000,000)\n ▶ 毎日初回ログイン時に、銀行の預金に1%の複利利息が付与される
-🎩 大富豪の執事 (費用: 400,000)\n ▶ ランキング1位の人が100万以上稼ぐ度に、その利益の1%を給与として得る
-🎯 賞金稼ぎ (費用: 10,000)\n ▶ /#bounty [aid] でターゲット指定。その人が次に負けた時、負け金の10%を報酬として奪う
+🎩 大富豪の執事 (費用: 400,000)\n ▶ ランキング1位か2位の人が稼ぐ度に、その利益の0.1%を給与として得る
+🎯 賞金稼ぎ (費用: 10,000)\n ▶ /#bounty [aid] でターゲット指定。その人が次に負けた時、負け金の10%を報酬として奪う(1日1回)
 🧮 数学者 (費用: 50,000)\n ▶ ルーレットの赤黒・偶数奇数等の2倍配当が「2.1倍」になる
+🎰 パチプロ (費用: 50,000)\n ▶ パチンコ遊技時の釘の入賞率が 5% から 7% に上がる
 [hr]※転職コマンド: /#job 役職名[/info]`);
             }
 
@@ -3831,6 +3974,7 @@ app.post('/webhook', (req, res) => {
                 else if(myJob === '大富豪の執事'){ e=Math.floor(Math.random()*1201)+800; m=`主のお世話をし、 ${formatNumber(e)} コイン稼ぎました！🎩`; }
                 else if(myJob === '賞金稼ぎ'){ e=Math.floor(Math.random()*2001)+500; m=`小悪党を捕まえ、 ${formatNumber(e)} コイン稼ぎました！🎯`; }
                 else if(myJob === '数学者'){ e=Math.floor(Math.random()*2001)+1500; m=`新たな公式を証明し、 ${formatNumber(e)} コイン稼ぎました！🧮`; }
+                else if(myJob === 'パチプロ'){ e=Math.floor(Math.random()*1501)+500; m=`優良台のデータを取り、 ${formatNumber(e)} コイン稼ぎました！🎰`; }
                 
                 await supabase.from('players').update({ last_work_time: Date.now(), work_limit: player.work_limit - 1 }).eq('account_id', senderId);
                 await addMoney(senderId, e); 
@@ -4013,7 +4157,6 @@ app.post('/webhook', (req, res) => {
                             kabuData.pendingProfit = (kabuData.pendingProfit || 0) + p.bet;
                         }
                     } else {
-                        // RECRUITING 段階なら返金のみ（まだベットしていないが念のため）
                         pMsg = " (退出)";
                     }
 
@@ -4443,3 +4586,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Run ${PORT}`));
 
 module.exports = app;
+
