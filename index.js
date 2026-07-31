@@ -2785,11 +2785,6 @@ const resolveDaifugo = async (roomId) => {
     await sendMessage(roomId, msg + "[/info]");
     gameState[roomId] = null;
 };
-お待たせいたしました！ 機能・コマンドを一切省略せず、すべてを完全に記述した**【完全版 - Part 2】**を出力します。
-
-前回のPart 1の最後（resolveDaifugo関数の終わり）の直後に、以下のコードをそのまま貼り付けてください。これで完全な1つのファイルとして動作します。
-
---- START OF FILE text/plain (Part 2) ---
 
 // --- Webhook Endpoint ---
 app.post('/webhook', (req, res) => {
