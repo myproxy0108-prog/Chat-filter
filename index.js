@@ -3115,7 +3115,124 @@ app.post('/webhook', (req, res) => {
 
                 return sendTempMessage(roomId, msg + `[/info]`);
             }
+// ==========================================
+            // --- ステータス・仕事・ジョブ・ヘルプ ---
+            // ==========================================
 
+            // 1. ヘルプメニュー
+            if (/(^|\n)[/#]help-gya\b/.test(body)) {
+                const helpMsg = `[info][title]🎰 カジノ＆ライフ 総合案内[/title]
+【 🏦 基本 】
+/#status : 状態・戦績・dRTP・覚悟ゲージ確認
+/#quest : デイリークエスト
+/#badge : 称号一覧 / #badgeuse [名] : 装備
+/#deposit / #withdraw : 銀行入出金
+/#give [aid] [額] : 送金
+
+【 💼 職業 】
+/#job : 求人一覧 / #job [名] : 転職(50万〜)
+/#work : 仕事(1分に1回, 1日10回)
+/#owner : [オーナー] 30分間他人の負け金回収
+/#next-future : [未来人] 未来予知
+
+【 🎰 ギャンブル 】
+/#slot [額] : スロット
+/#scratch [額] : スクラッチ(演出付)
+/#pachinko [額] : パチンコ(ループ消化, /#skipで演出飛ばし)
+
+【 🎲 テーブルゲーム 】
+/#chouhan, /#cc, /#bj, /#poker, /#yacht, /#sicbo, /#rolet, /#derby, /#buta, /#daifugo, /#crash, /#highlow
+※ルール詳細は /#help [ゲーム名] (例: /#help bj)[/info]`;
+                return sendTempMessage(roomId, helpMsg, 120000);
+            }
+
+            // 2. ステータス表示 (dRTP、覚悟ゲージ、装備称号に対応)
+            if (/(^|\n)[/#]status\b/.test(body)) {
+                let targetAid = repliedAid || senderId;
+                let { data: tD } = await supabase.from('players').select('*').eq('account_id', targetAid).single();
+                if (!tD) return;
+                
+                let js = typeof tD.job_state === 'string' ? JSON.parse(tD.job_state || '{}') : (tD.job_state || {});
+                let nw = calculateNetWorth(tD);
+                let eBadge = js.equipped_badge || null;
+                
+                // dRTPの計算
+                let drtp = 0;
+                if (js.daily_stats && js.daily_stats.bet > 0) {
+                    drtp = ((js.daily_stats.return / js.daily_stats.bet) * 100).toFixed(1);
+                }
+
+                let msg = `[info][title]📊 プレイヤー情報[/title]${formatPiconBadge(targetAid, eBadge)}
+💰 所持金: ${formatNumber(tD.money)} コイン
+🏦 銀行預金: ${formatNumber(tD.bank)} コイン
+💎 純資産: ${formatNumber(nw)} コイン
+👔 職業: ${tD.job || 'サラリーマン'}
+[hr]📉 本日の回収率(dRTP): ${drtp}%
+⚔️ 通算戦績: ${tD.plays || 0}戦 ${tD.wins || 0}勝 / 勝率: ${(tD.plays ? ((tD.wins / tD.plays) * 100).toFixed(1) : 0)}%`;
+
+                if (tD.job === '運命のギャンブラー') {
+                    msg += `\n🔥 【覚悟】: ${js.kakugo || 0} / 10 ゲージ (負けるほど貯まり、自動で大逆転解放)`;
+                }
+
+                msg += `\n💼 お仕事残り: ${tD.work_limit}回 / 🎰 スロット残り: ${5 - tD.slot_count}回[/info]`;
+                return sendTempMessage(roomId, msg);
+            }
+
+            // 3. お仕事 (1分間隔、1日10回)
+            if (/(^|\n)[/#]work\b/.test(body) && gambleActive) {
+                if (player.work_limit <= 0) return sendTempMessage(roomId, `[info]⚠️ 本日の仕事回数が上限です。[/info]`);
+                if (Date.now() - (player.last_work_time || 0) < 60000) return sendTempMessage(roomId, `[info]⚠️ 休憩中です(1分間隔)。[/info]`);
+                
+                let e = 0;
+                if (myJob === 'サラリーマン') e = Math.floor(Math.random() * 1601) + 400;
+                else if (myJob === '公務員') e = Math.floor(Math.random() * 801) + 1200;
+                else if (myJob === '警察官') e = Math.floor(Math.random() * 1601) + 1200;
+                else if (myJob === 'プロスポーツ選手') e = Math.floor(Math.random() * 2001) + 2000;
+                else if (myJob === '運命のギャンブラー') e = Math.floor(Math.random() * 1001) + 1000;
+                else if (myJob === '未来人') e = Math.floor(Math.random() * 5001) + 5000;
+                else e = Math.floor(Math.random() * 2001) + 1000; // その他
+
+                await supabase.from('players').update({ last_work_time: Date.now(), work_limit: player.work_limit - 1 }).eq('account_id', senderId);
+                await addMoney(senderId, e);
+                await updateQuest(senderId, 'work_count', 1);
+                return sendTempMessage(roomId, `[info]💼 ${formatPiconBadge(senderId, eqBadge)}\n仕事をこなして ${formatNumber(e)} コイン稼ぎました！\n(残り ${player.work_limit - 1} 回)[/info]`);
+            }
+
+            // 4. 転職 / 求人
+            if (/(^|\n)[/#]job\b/.test(body) && gambleActive) {
+                const jobMatch = body.match(/[/#]job\s+(.+)/);
+                if (jobMatch) {
+                    const jn = jobMatch[1].trim();
+                    const costs = {
+                        'サラリーマン': 0, '公務員': 2000, '警察官': 3000, 'プロスポーツ選手': 5000, 
+                        '賭博師': 200000, 'ギャンブルオーナー': 1000000, '未来人': 5000000,
+                        '逆転のギャンブラー': 1000000, '運命のギャンブラー': 500000, '銀行員': 1000000, 
+                        '大富豪の執事': 400000, '賞金稼ぎ': 10000, '数学者': 50000, 'パチプロ': 50000
+                    };
+                    if (costs[jn] === undefined) return sendTempMessage(roomId, `[info]⚠️ その職業は存在しません。[/info]`);
+                    if (myMoney < costs[jn]) return sendTempMessage(roomId, `[info]⚠️ 転職費用(${formatNumber(costs[jn])})が足りません。[/info]`);
+                    
+                    await supabase.from('players').update({ job: jn, money: myMoney - costs[jn] }).eq('account_id', senderId);
+                    return sendTempMessage(roomId, `[info]🎉 ${formatPiconBadge(senderId, eqBadge)}\n【 ${jn} 】に転職しました！[/info]`);
+                } else {
+                    return sendTempMessage(roomId, `[info][title]💼 求人センター[/title]
+・サラリーマン (0)
+・公務員 (2,000)
+・警察官 (3,000)
+・プロスポーツ選手 (5,000)
+・賞金稼ぎ (10,000): 敗者の金を奪う
+・数学者 (50,000): ルーレット配当2.2倍
+・パチプロ (50,000): 釘調整UP
+・賭博師 (200,000): スロット回数UP
+・大富豪の執事 (400,000): 富豪の利益から給料
+・運命のギャンブラー (500,000): 負けて「覚悟」を貯め強制勝利
+・銀行員 (1,000,000): 預金利息
+・逆転のギャンブラー (1,000,000): 負け金返還
+・ギャンブルオーナー (1,000,000): 負け金回収
+・未来人 (5,000,000): 未来予知
+[hr]コマンド: /#job 職種名[/info]`);
+                }
+            }
             // --- 新装開店 パチンコ (完全ループ化・演出スキップ・RUSH 70%) ---
             if (/(^|\n)[/#]skip\b/.test(body) && gambleActive) {
                 if (pachinkoPlayers[senderId]?.active) {
