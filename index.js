@@ -330,13 +330,13 @@ const processBuffs = async (aid, isWin, isLose, isDraw, mult, resTxt) => {
 
     // 運命のギャンブラーの「覚悟」システム判定
     if (pData && pData.job === '運命のギャンブラー' && js.kakugo > 0) {
-        let triggerRate = 0.5 + (js.kakugo * 0.04);
-        if (triggerRate > 0.90) triggerRate = 0.90;
+        let triggerRate = 0.1 + (js.kakugo * 0.04);
+        if (triggerRate > 0.05) triggerRate = 0.05;
         
         if (Math.random() < triggerRate) {
             // 当選：強制勝利化＆倍率加算
             isWin = true; isLose = false; isDraw = false;
-            let bonusMult = js.kakugo > 10 ? 10 : js.kakugo;
+            let bonusMult = js.kakugo > 5 ? 5 : js.kakugo;
             mult += bonusMult;
             resTxt += `\n⚡【運命発動】${js.kakugo}の覚悟を全解放！強制的に運命をねじ伏せた！ (配当+${bonusMult}倍) `;
             js.kakugo = 0;
