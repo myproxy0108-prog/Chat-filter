@@ -336,7 +336,7 @@ const processBuffs = async (aid, isWin, isLose, isDraw, mult, resTxt) => {
         if (Math.random() < triggerRate) {
             // 当選：強制勝利化＆倍率加算
             isWin = true; isLose = false; isDraw = false;
-            let bonusMult = js.kakugo > 5 ? 5 : js.kakugo;
+            let bonusMult = js.kakugo > 3 ? 3 : js.kakugo;
             mult += bonusMult;
             resTxt += `\n⚡【運命発動】${js.kakugo}の覚悟を全解放！強制的に運命をねじ伏せた！ (配当+${bonusMult}倍) `;
             js.kakugo = 0;
