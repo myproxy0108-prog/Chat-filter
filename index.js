@@ -3164,7 +3164,7 @@ app.post('/webhook', (req, res) => {
                             for (let i = 0; i < consume; i++) {
                                 if (Math.random() < startEntryRate) {
                                     spinsInBatch++; totalSpins++;
-                                    if (Math.random() < (1/99)) {
+                                    if (Math.random() < (1/319)) {
                                         hitsThisBatch = true;
                                         bRemaining += (consume - i - 1); 
                                         break;
