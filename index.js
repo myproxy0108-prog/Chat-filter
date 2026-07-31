@@ -2784,8 +2784,6 @@ const resolveDaifugo = async (roomId) => {
     await sendMessage(roomId, msg + "[/info]");
     gameState[roomId] = null;
 };
-
---- END OF FILE text/plain (Part 1) ---
 // --- Webhook Endpoint ---
 app.post('/webhook', (req, res) => {
     if (!verifySignature(req)) return res.status(401).send('Invalid Signature');
