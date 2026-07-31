@@ -3232,7 +3232,76 @@ app.post('/webhook', (req, res) => {
 ・未来人 (5,000,000): 未来予知
 [hr]コマンド: /#job 職種名[/info]`);
                 }
-            }// パチンコのスキップ処理 (/skip)
+            }
+     // ==========================================
+            // --- スロットマシン (演出付き) ---
+            // ==========================================
+            const sM = body.match(/(^|\n)[/#]slot\s+(max|half|[0-9]+)/);
+            if (sM && gambleActive) {
+                // 1. 回数・待機時間チェック
+                if (player.slot_count >= 5) return sendTempMessage(roomId, `[info]⚠️ 本日のスロット上限(5回)に達しました。[/info]`);
+                if (Date.now() - Number(player.last_slot_time || 0) < 60000) return sendTempMessage(roomId, `[info]⚠️ スロット休憩中(1分間隔)です！[/info]`);
+                
+                // 2. 賭け金計算
+                let bet = sM[2] === 'max' ? Math.min(myMoney, 9990000) : (sM[2] === 'half' ? Math.floor(myMoney / 2) : parseInt(sM[2], 10));
+                if (bet > 9990000 || bet < 500) return sendTempMessage(roomId, `[info]⚠️ 賭け金は500〜9,990,000の範囲で指定してください。[/info]`);
+                
+                if (myMoney < bet) return sendTempMessage(roomId, `[info]⚠️ お金が足りません！[/info]`);
+
+                // 3. 支払いとデータ更新
+                let updates = { money: myMoney - bet, slot_count: player.slot_count + 1, last_slot_time: Date.now() };
+                if (player.life_bet_unlocked) updates.life_bet_unlocked = false;
+                await supabase.from('players').update(updates).eq('account_id', senderId);
+                await updateQuest(senderId, 'slot_count', 1);
+
+                // 4. 当選判定 (おみくじ補正込み)
+                let r = Math.random() * 100;
+                let omi = (player.omikuji_date === today) ? player.omikuji_result : null;
+                if(omi === '大吉') r = Math.max(0, r - 0.5);
+                else if(omi === '中吉') r = Math.max(0, r - 0.2);
+                
+                let ml = 0, sy = "", resTxt = "";
+                if(r < 0.1){ ml=100; sy="🐉 | 🐉 | 🐉"; resTxt="🔥 超神台確定！！ 100倍当選！！ 🔥"; } 
+                else if(r < 3.1){ ml=10; sy="7️⃣ | 7️⃣ | 7️⃣"; resTxt="✨ 大当たり！ 10倍当選！ ✨"; } 
+                else if(r < 15.1){ ml=3; let s=["6️⃣","5️⃣","4️⃣"][Math.floor(Math.random()*3)]; sy=`${s} | ${s} | ${s}`; resTxt="🔔 当たり！ (3倍)"; } 
+                else if(r < 35.1){ ml=2; let s=["[picon:10870480]","🍉","🍋","🔔","🍇"][Math.floor(Math.random()*4)]; sy=`${s} | ${s} | ${s}`; resTxt="🍇 当たり！ (2倍)"; } 
+                else { ml=0; let o=["[picon:10870480]","🐉","🍉","🍋","🔔","🍇","7️⃣","6️⃣","5️⃣"]; let r1=o[0], r2=o[1], r3=o[2]; sy=`${o[Math.floor(Math.random()*7)]} | ${o[Math.floor(Math.random()*7)]} | ${o[Math.floor(Math.random()*7)]}`; resTxt="💀 はずれ..."; }
+
+                // 5. バフ・スキル処理（運命のギャンブラーの覚悟解放など）
+                let br = await processBuffs(senderId, ml > 0, ml === 0, false, ml, resTxt);
+                ml = br.mult; resTxt = br.resTxt;
+
+                // 6. 清算
+                let winAmt = bet * ml;
+                if (winAmt > 0) {
+                    let { stolen, jokerMsg } = await processJoker(senderId, winAmt, roomId);
+                    winAmt -= stolen; resTxt += jokerMsg;
+                    await addMoney(senderId, winAmt);
+                    await updatePlayerStats(senderId, bet, winAmt, 'win');
+                } else {
+                    // はずれの場合：運命のギャンブラーなら覚悟蓄積
+                    await updatePlayerStats(senderId, bet, 0, 'lose');
+                    await processOwnerSkill(senderId, bet, roomId);
+                    resTxt += await processBounty(senderId, bet, roomId);
+                }
+
+                // 7. 演出 (リール回転)
+                let msgRes = await chatworkClient.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(`[info]🎰 SLOT MACHINE 回転中...\n[ ❓ | ❓ | ❓ ][/info]`)}`);
+                if (msgRes && msgRes.data) {
+                    let mId = msgRes.data.message_id;
+                    const syms = ["[picon:10870480]","🍉","🍋","🔔","🍇","7️⃣","6️⃣","5️⃣","🐉"];
+                    // 回転演出
+                    for(let i=0; i<5; i++) {
+                        await sleep(400);
+                        let t1=syms[Math.floor(Math.random()*8)], t2=syms[Math.floor(Math.random()*8)], t3=syms[Math.floor(Math.random()*8)];
+                        await editMessage(roomId, mId, `[info]🎰 SLOT MACHINE 回転中...\n[ ${t1} | ${t2} | ${t3} ][/info]`);
+                    }
+                    // 結果表示
+                    await editMessage(roomId, mId, `[info][title]🎰 SLOT MACHINE[/title]${formatPiconBadge(senderId, eqBadge)}\n[hr]　▶ [ ${sy} ] ◀　\n[hr]${resTxt}\n\n賭け金: ${formatNumber(bet)} ➡ 獲得: ${formatNumber(winAmt)} コイン\n(残り回数: ${Math.max(0, 4 - player.slot_count)}回)[/info]`);
+                }
+                return;
+            }
+            // パチンコのスキップ処理 (/skip)
 if (/(^|\n)[/#]skip\b/.test(body) && gambleActive) {
     if (pachinkoPlayers[senderId]?.active) {
         // スキップフラグをオンにする
