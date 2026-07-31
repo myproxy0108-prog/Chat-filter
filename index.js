@@ -330,7 +330,7 @@ const processBuffs = async (aid, isWin, isLose, isDraw, mult, resTxt) => {
 
     // 運命のギャンブラーの「覚悟」システム判定
     if (pData && pData.job === '運命のギャンブラー' && js.kakugo > 0) {
-        let triggerRate = 0.1 + (js.kakugo * 0.04);
+        let triggerRate = 0.007 + (js.kakugo * 0.04);
         if (triggerRate > 0.05) triggerRate = 0.05;
         
         if (Math.random() < triggerRate) {
