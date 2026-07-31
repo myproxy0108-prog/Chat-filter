@@ -3232,14 +3232,16 @@ app.post('/webhook', (req, res) => {
 ・未来人 (5,000,000): 未来予知
 [hr]コマンド: /#job 職種名[/info]`);
                 }
-            }
-            // --- 新装開店 パチンコ (完全ループ化・演出スキップ・RUSH 70%) ---
-            if (/(^|\n)[/#]skip\b/.test(body) && gambleActive) {
-                if (pachinkoPlayers[senderId]?.active) {
-                    pachinkoPlayers[senderId].skip = true;
-                    return sendTempMessage(roomId, `[info]⏩ 演出をスキップし、フル回転でのバッチ消化に切り替えます！[/info]`);
-                } else return sendTempMessage(roomId, `[info]⚠️ 稼働中の台がありません。[/info]`);
-            }
+            }// パチンコのスキップ処理 (/skip)
+if (/(^|\n)[/#]skip\b/.test(body) && gambleActive) {
+    if (pachinkoPlayers[senderId]?.active) {
+        // スキップフラグをオンにする
+        pachinkoPlayers[senderId].skip = true;
+        return sendTempMessage(roomId, `[info]⏩ ${formatPiconBadge(senderId, eqBadge)} \n演出をスキップしました。裏側で高速消化中です...[/info]`);
+    } else {
+        return sendTempMessage(roomId, `[info]⚠️ 現在パチンコを遊技していません。[/info]`);
+    }
+}
 
             if (/(^|\n)[/#]pachinko\s+([0-9]+)/.test(body) && gambleActive) {
                 let amt = parseInt(body.match(/(^|\n)[/#]pachinko\s+([0-9]+)/)[2], 10);
