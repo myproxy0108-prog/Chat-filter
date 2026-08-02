@@ -51,7 +51,13 @@ const addBadge = (aid, badgeName, roomId = null) => {
         console.error("Badge Save Error:", e);
     }
 };
-
+// 金額文字列（100, max, half）を数値に変換する共通関数
+const parseAmount = (str, currentMoney) => {
+    if (!str) return 0;
+    if (str.toLowerCase() === 'max' || str.toLowerCase() === 'all') return currentMoney;
+    if (str.toLowerCase() === 'half') return Math.floor(currentMoney / 2);
+    return parseInt(str.replace(/,/g, ''), 10);
+};
 const formatPiconBadge = (aid, equippedBadge) => {
     return equippedBadge ? `【${equippedBadge}】[piconname:${aid}]` : `[piconname:${aid}]`;
 };
@@ -3359,7 +3365,7 @@ app.post('/webhook', (req, res) => {
                             } else {
                                 if (!pachinkoPlayers[senderId].skip && mId) {
                                     if (Math.random() < 0.3) {
-                                        await editMessage(roomId, mId, `[info][title]🎰 パチンコ稼働中[/title]遊技者: ${formatPiconBadge(senderId, eqBadge)}\n[現在 総計${totalSpins} 回転目...] (残り${bRemaining}玉)\n... 消化中 ... (※スキップ可能)[/info]`);
+                                        await sleep(350);
                                     }
                                 }
                                 await sleep(350); 
