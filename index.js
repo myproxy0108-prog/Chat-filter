@@ -1,3 +1,4 @@
+
 const express = require('express');
 const crypto = require('crypto');
 const axios = require('axios');
@@ -33,7 +34,7 @@ if (!fs.existsSync(badgesFile)) {
     fs.writeFileSync(badgesFile, JSON.stringify({}));
 }
 
-const addBadge = (aid, badgeName, roomId) => {
+const addBadge = (aid, badgeName, roomId = null) => {
     try {
         let badges = JSON.parse(fs.readFileSync(badgesFile, 'utf8'));
         if (!badges[aid]) badges[aid] = [];
@@ -292,11 +293,12 @@ const tryUseItem = async (aid, itemName) => {
     return { success: true, msg: "" };
 };
 
-const processBuffs = async (aid, isWin, isLose, isDraw, mult, resTxt) => {
+const processBuffs = async (aid, isWin, isLose, isDraw, mult, resTxt, gameType) => {
     let { data: pData } = await supabase.from('players').select('job_state').eq('account_id', aid).single();
     let js = pData && typeof pData.job_state === 'string' ? JSON.parse(pData.job_state || '{}') : (pData?.job_state || {});
     let updated = false;
 
+    // ディーラーの弱み
     if (isLose && js.dealer_weakness_active) {
         js.dealer_weakness_active = false; updated = true;
         if (Math.random() < 0.5) {
@@ -307,6 +309,33 @@ const processBuffs = async (aid, isWin, isLose, isDraw, mult, resTxt) => {
         }
     }
 
+    // てんびん
+    if (js.balance_active && ['chouhan', 'sicbo', 'rolet', 'highlow'].includes(gameType)) {
+        js.balance_active = false; updated = true;
+        let r = Math.random();
+        if (r < 0.1) {
+            isWin = !isWin; isLose = !isWin; isDraw = false;
+            resTxt += `(⚖️天秤が逆に傾いた...!) `;
+        } else {
+            let bonus = 0.1 + Math.random() * 0.2; 
+            let r2 = Math.random();
+            if (!isWin && !isDraw && r2 < bonus) {
+                isWin = true; isLose = false; isDraw = false;
+                resTxt += `(⚖️天秤の力で勝利に傾いた!) `;
+            }
+        }
+    }
+
+    // 隻眼
+    if (js.sekigan_active && ['bj', 'yacht'].includes(gameType)) {
+        js.sekigan_active = false; updated = true;
+        if (isWin) {
+            mult = 3.0; 
+            resTxt += `(👁️隻眼ボーナス: 配当3倍!) `;
+        }
+    }
+
+    // ダブルアップ
     if (isWin && js.double_up_guess) {
         let guess = js.double_up_guess;
         js.double_up_guess = null; updated = true;
@@ -340,7 +369,7 @@ const checkAndDropCat = async (aid, roomId) => {
     }
 };
 
-const updateQuest = async (aid, key, count = 1) => {
+const updateQuest = async (aid, key, count = 1, roomId = null) => {
     let { data: p } = await supabase.from('players').select('job_state').eq('account_id', aid).single();
     if (!p) return;
     let js = typeof p.job_state === 'string' ? JSON.parse(p.job_state || '{}') : (p.job_state || {});
@@ -380,7 +409,7 @@ const addMoney = async (accountId, amount) => {
     }
 };
 
-const updatePlayerStats = async (accountId, betAmount, returnAmount, resultType, isTableGame = false) => {
+const updatePlayerStats = async (accountId, betAmount, returnAmount, resultType, isTableGame = false, roomId = null) => {
     const { data: p } = await supabase.from('players').select('plays, wins, loses, total_bet, total_return, job_state').eq('account_id', accountId).single();
     if (!p) return;
     let plays = (p.plays || 0) + 1;
@@ -404,27 +433,9 @@ const updatePlayerStats = async (accountId, betAmount, returnAmount, resultType,
 
     await supabase.from('players').update({ plays, wins, loses, total_bet, total_return, job_state: JSON.stringify(js) }).eq('account_id', accountId);
 
-    if (wins === 1) addBadge(accountId, '初勝利');
-    if (wins === 10) addBadge(accountId, '駆け出しギャンブラー');
-    if (wins === 100) addBadge(accountId, 'ベテランギャンブラー');
-};
-
-const updateWinStreak = async (accountId, result, roomId) => {
-    if (result === 'draw') return;
-    const { data: p } = await supabase.from('players').select('win_streak').eq('account_id', accountId).single();
-    if (!p) return;
-    let streak = p.win_streak || 0;
-    if (result === 'win') {
-        streak++;
-        let updates = { win_streak: streak };
-        if (streak === 8) {
-            updates.life_bet_unlocked = true;
-            setTimeout(() => { sendMessage(roomId, `[info][piconname:${accountId}]\nなんだろ…いまならいける気がする…\n(※次回のゲームで特別に /#bet life が使用可能になりました！)[/info]`); }, 1000);
-        }
-        await supabase.from('players').update(updates).eq('account_id', accountId);
-    } else if (result === 'lose') {
-        await supabase.from('players').update({ win_streak: 0, life_bet_unlocked: false }).eq('account_id', accountId);
-    }
+    if (wins === 1) addBadge(accountId, '初勝利', roomId);
+    if (wins === 10) addBadge(accountId, '駆け出しギャンブラー', roomId);
+    if (wins === 100) addBadge(accountId, 'ベテランギャンブラー', roomId);
 };
 
 const checkTrauma = (p) => {
@@ -481,7 +492,7 @@ const processOwnerSkill = async (loserAid, lostAmount, roomId) => {
     let now = Date.now();
     let excluded = await getExcludedAids();
     if (ownerSkill.expire > now && ownerSkill.aid && ownerSkill.aid !== loserAid.toString()) {
-        if (excluded.includes(ownerSkill.aid.toString())) return; // ランキング外は発動不可
+        if (excluded.includes(ownerSkill.aid.toString())) return; // ランキング外は恩恵なし
         if (Math.random() < 0.5) { 
             let stealAmount = Math.floor(lostAmount * 0.5); 
             if (stealAmount > 0) {
@@ -507,7 +518,7 @@ const processGamblerSkill = async (aid, lostAmount, roomId) => {
     if (currentRTP <= threshold) {
         if (Math.random() < 0.8) {
             await addMoney(aid, lostAmount);
-            await updatePlayerStats(aid, 0, lostAmount, 'draw'); 
+            await updatePlayerStats(aid, 0, lostAmount, 'draw', false, roomId); 
             sendMessage(roomId, `[info]🔄 逆転のギャンブラー発動！\n[piconname:${aid}] 崖っぷちの運命が覆り、負け金 ${formatNumber(lostAmount)} コインが返還されました！[/info]`);
             return true;
         }
@@ -674,20 +685,36 @@ const comparePoker = (a, b) => {
     return 0;
 };
 
-const getPokerBotKeepIndices = (hand) => {
-    let counts = {};
-    hand.forEach((c, i) => {
-        let v = c.rank === 'A' ? 14 : (['J','Q','K'].includes(c.rank) ? [11,12,13][['J','Q','K'].indexOf(c.rank)] : parseInt(c.rank));
-        if(!counts[v]) counts[v] = [];
-        counts[v].push(i);
-    });
-    let keep = []; let maxV = 0; let maxVIdx = 0;
-    for (let v in counts) {
-        if (counts[v].length >= 2) keep.push(...counts[v]); 
-        if (parseInt(v) > maxV) { maxV = parseInt(v); maxVIdx = counts[v][0]; }
+const getBestPokerRank = (hand7) => {
+    let bestRank = { rank: -1, scoreArr: [] };
+    const getCombinations = (arr, k) => {
+        let i, j, combs, head, tailcombs;
+        if (k > arr.length || k <= 0) return [];
+        if (k == arr.length) return [arr];
+        if (k == 1) {
+            combs = [];
+            for (i = 0; i < arr.length; i++) combs.push([arr[i]]);
+            return combs;
+        }
+        combs = [];
+        for (i = 0; i < arr.length - k + 1; i++) {
+            head = arr.slice(i, i + 1);
+            tailcombs = getCombinations(arr.slice(i + 1), k - 1);
+            for (j = 0; j < tailcombs.length; j++) {
+                combs.push(head.concat(tailcombs[j]));
+            }
+        }
+        return combs;
+    };
+    
+    let combs = getCombinations(hand7, 5);
+    for (let comb of combs) {
+        let ev = getPokerRank(comb);
+        if (bestRank.rank === -1 || comparePoker(ev, bestRank) > 0) {
+            bestRank = ev;
+        }
     }
-    if (keep.length === 0) keep.push(maxVIdx); 
-    return keep;
+    return bestRank;
 };
 
 const getYachtRank = (dice) => {
@@ -831,23 +858,23 @@ const handleGameTimeout = async (roomId) => {
                 startGameTimer(roomId, 120000, true);
             } else if (game.type === 'crash') {
                 let ex = `/#bet [額] [目標倍率(1.01以上)] (例: /#bet 100 2.5)`;
-                await sendTempMessage(roomId, `[info][title]⏳ 募集終了・ゲーム開始[/title]参加者が確定しました。\n\n${ex}\n[hr](※制限1分。 /#bet life も使えます)[/info]`);
+                await sendTempMessage(roomId, `[info][title]⏳ 募集終了・ゲーム開始[/title]参加者が確定しました。\n\n${ex}\n[hr](※制限1分)[/info]`);
                 startGameTimer(roomId, 60000);
             } else if (game.type === 'highlow') {
                 let ex = `/#bet [額] high か /#bet [額] low`;
-                await sendTempMessage(roomId, `[info][title]⏳ 募集終了・ゲーム開始[/title]参加者が確定しました。\n\n${ex}\n[hr](※制限1分。 /#bet life も使えます)[/info]`);
+                await sendTempMessage(roomId, `[info][title]⏳ 募集終了・ゲーム開始[/title]参加者が確定しました。\n\n${ex}\n[hr](※制限1分)[/info]`);
                 startGameTimer(roomId, 60000);
             } else if (game.type === 'sicbo') {
                 let ex = `/#bet [額] dai か /#bet [額] shou か /#bet [額] any`;
-                await sendTempMessage(roomId, `[info][title]⏳ 募集終了・ゲーム開始[/title]参加者が確定しました。\n\n${ex}\n[hr](※制限1分。 /#bet life も使えます)[/info]`);
+                await sendTempMessage(roomId, `[info][title]⏳ 募集終了・ゲーム開始[/title]参加者が確定しました。\n\n${ex}\n[hr](※制限1分)[/info]`);
                 startGameTimer(roomId, 60000);
             } else if (game.type === 'rolet') {
                 let ex = `/#bet [額] [予想] (red/black/even/odd/high/low/数字)`;
-                await sendTempMessage(roomId, `[info][title]⏳ 募集終了・ゲーム開始[/title]参加者が確定しました。\n\n${ex}\n[hr](※制限1分。 /#bet life も使えます)[/info]`);
+                await sendTempMessage(roomId, `[info][title]⏳ 募集終了・ゲーム開始[/title]参加者が確定しました。\n\n${ex}\n[hr](※制限1分)[/info]`);
                 startGameTimer(roomId, 60000);
             } else {
                 let ex = `/#bet [額] でベットしてください。`;
-                await sendTempMessage(roomId, `[info][title]⏳ 募集終了・ゲーム開始[/title]参加者が確定しました。\n\n${ex}\n[hr](※制限1分。 /#bet life や /#bet max も使えます)[/info]`);
+                await sendTempMessage(roomId, `[info][title]⏳ 募集終了・ゲーム開始[/title]参加者が確定しました。\n\n${ex}\n[hr](※制限1分。 /#bet max も使えます)[/info]`);
                 startGameTimer(roomId, 60000);
             }
         } else {
@@ -857,7 +884,7 @@ const handleGameTimeout = async (roomId) => {
     } else if (game.state === 'BETTING') {
         let kickedAids = [], activePlayers = [];
         for (let player of game.players) {
-            if (player.bet === 0 && !player.isLifeBet) kickedAids.push(player.aid);
+            if (player.bet === 0) kickedAids.push(player.aid);
             else activePlayers.push(player);
         }
         game.players = activePlayers;
@@ -879,8 +906,7 @@ const handleGameTimeout = async (roomId) => {
         if (!isEnoughPlayers) {
             for (let player of game.players) {
                 if (player.bet > 0) {
-                    if (player.isLifeBet) await addMoney(player.aid, player.lifeBetBaseAmount); 
-                    else await addMoney(player.aid, player.bet); 
+                    await addMoney(player.aid, player.bet); 
                 }
             }
             if (game.spectators) {
@@ -901,12 +927,16 @@ const handleGameTimeout = async (roomId) => {
                     await sendTempMessage(roomId, `[info]⏳ タイムアウトにより、[piconname:${player.aid}] 様は強制パスしました。[/info]`);
                     game.daifugo.passCount++;
                     await checkDaifugoNextTurn(roomId);
+                } else if (game.type === 'poker') {
+                    player.status = 'fold';
+                    await sendTempMessage(roomId, `[info]⏳ タイムアウトにより、[piconname:${player.aid}] 様は自動フォールドしました。[/info]`);
+                    game.turnIndex++;
+                    await proceedNextPokerTurn(roomId);
                 } else {
                     player.status = 'stand';
                     await sendTempMessage(roomId, `[info]⏳ タイムアウトにより、[piconname:${player.aid}] 様は自動スタンドしました。[/info]`);
                     game.turnIndex++;
-                    if (game.type === 'poker') await proceedNextPokerTurn(roomId);
-                    else if (game.type === 'yacht') await proceedNextYachtTurn(roomId);
+                    if (game.type === 'yacht') await proceedNextYachtTurn(roomId);
                     else if (game.type === 'buta') await proceedNextButaTurn(roomId);
                     else await proceedNextBJTurn(roomId);
                 }
@@ -920,8 +950,8 @@ const handleGameTimeout = async (roomId) => {
                 let totalPot = game.players[0].bet + game.players[1].bet;
 
                 await addMoney(winner.aid, totalPot);
-                await updatePlayerStats(winner.aid, winner.bet, totalPot, 'win');
-                await updatePlayerStats(player.aid, player.bet, 0, 'lose');
+                await updatePlayerStats(winner.aid, winner.bet, totalPot, 'win', true, roomId);
+                await updatePlayerStats(player.aid, player.bet, 0, 'lose', true, roomId);
                 await updateWinStreak(winner.aid, 'win', roomId);
                 await updateWinStreak(player.aid, 'lose', roomId);
                 
@@ -934,10 +964,10 @@ const handleGameTimeout = async (roomId) => {
                         if (spec.targetAid === winner.aid) {
                             let winAmt = spec.bet * 2;
                             await addMoney(spec.aid, winAmt);
-                            await updatePlayerStats(spec.aid, spec.bet, winAmt, 'win');
+                            await updatePlayerStats(spec.aid, spec.bet, winAmt, 'win', false, roomId);
                             specMsg += `[piconname:${spec.aid}]: 予想的中！ (+${formatNumber(winAmt)})\n`;
                         } else {
-                            await updatePlayerStats(spec.aid, spec.bet, 0, 'lose');
+                            await updatePlayerStats(spec.aid, spec.bet, 0, 'lose', false, roomId);
                             specMsg += `[piconname:${spec.aid}]: 予想はずれ (没収)\n`;
                         }
                     }
@@ -958,10 +988,6 @@ const handleGameTimeout = async (roomId) => {
                     await supabase.from('players').update({ win_streak: 0, life_bet_unlocked: false }).eq('account_id', player.aid);
                     if (player.bet > 0) {
                         await processOwnerSkill(player.aid, player.bet, roomId);
-                    }
-                    if (player.isLifeBet) {
-                        await supabase.from('blacklist').insert({ account_id: player.aid });
-                        await updateRoomMembers(roomId, [player.aid], 'readonly');
                     }
                 } else activePlayers.push(player);
             }
@@ -987,10 +1013,17 @@ const checkGameProgress = async (roomId) => {
     let game = gameState[roomId]; 
     if (!game || game.state === 'IDLE') return;
     
-    let allPlayersBet = game.players.every(p => (p.bet > 0 || p.isLifeBet) && !p.pendingLifeBet);
+    let allPlayersBet = game.players.every(p => p.bet > 0);
     let allSpectatorsBet = !game.spectators || game.spectators.every(s => s.bet > 0);
 
     if (game.state === 'BETTING' && allPlayersBet && allSpectatorsBet) {
+        // 全員の job_state を取得し、隻眼フラグを各プレイヤーにコピー
+        for (let p of game.players) {
+            let { data: pData } = await supabase.from('players').select('job_state').eq('account_id', p.aid).single();
+            let js = pData && typeof pData.job_state === 'string' ? JSON.parse(pData.job_state || '{}') : (pData?.job_state || {});
+            p.isSekigan = !!js.sekigan_active;
+        }
+
         if (game.type === 'russian') {
             game.state = 'ACTION';
             game.bulletPos = Math.floor(Math.random() * 6);
@@ -1026,11 +1059,16 @@ const checkGameProgress = async (roomId) => {
             let msg = `[info][title]🃏 ブラックジャック 開始[/title]全員ベット完了！カードを配ります。\n\n【 ディーラー 】\n🎴 ${game.dealerHand[0].suit}${game.dealerHand[0].rank} / [裏]\n[hr]【 プレイヤー 】\n`;
             for (let p of game.players) {
                 p.hand = [game.deck.pop(), game.deck.pop()];
+                p.status = 'playing';
+                
+                let hStr = "";
+                if (p.isSekigan) hStr = `${p.hand[0].suit}${p.hand[0].rank} ❓`;
+                else hStr = p.hand.map(c => c.suit + c.rank).join(' ');
+
                 let pScore = calculateBJScore(p.hand);
-                let hStr = p.hand.map(c => c.suit + c.rank).join(' ');
-                msg += `[piconname:${p.aid}]: ${hStr} (スコア: ${pScore})`;
+                msg += `[piconname:${p.aid}]: ${hStr} ${p.isSekigan ? "(スコア: ?)" : `(スコア: ${pScore})`}`;
                 if (pScore === 21) { p.status = 'bj'; msg += ` 🎉 ブラックジャック！\n`; } 
-                else { p.status = 'playing'; msg += `\n`; }
+                else { msg += `\n`; }
             }
             msg += `[/info]`;
             await sendTempMessage(roomId, msg, 120000);
@@ -1039,11 +1077,13 @@ const checkGameProgress = async (roomId) => {
         } else if (game.type === 'poker') {
             game.state = 'ACTION';
             game.deck = generateDeck();
+            game.communityCards = [game.deck.pop(), game.deck.pop(), game.deck.pop(), game.deck.pop(), game.deck.pop()];
             
-            let msg = `[info][title]🃏 ポーカー 開始[/title]全員ベット完了！5枚ずつカードを配ります。\n\n`;
+            let commStr = `[ ${game.communityCards[0].suit}${game.communityCards[0].rank} ] [ ${game.communityCards[1].suit}${game.communityCards[1].rank} ] [ ${game.communityCards[2].suit}${game.communityCards[2].rank} ] [裏] [裏]`;
+            
+            let msg = `[info][title]🃏 テキサスホールデム 開始[/title]全員ベット完了！\n\n【 フロップ (共通カード) 】\n🎴 ${commStr}\n[hr]【 プレイヤー 】\n`;
             for (let p of game.players) {
-                p.hand = [];
-                for(let i=0; i<5; i++) p.hand.push(game.deck.pop());
+                p.hand = [game.deck.pop(), game.deck.pop()];
                 p.status = 'playing';
             }
             msg += `[/info]`;
@@ -1272,8 +1312,18 @@ const proceedNextBJTurn = async (roomId) => {
         if (player.status !== 'playing') { game.turnIndex++; continue; }
         
         let score = calculateBJScore(player.hand);
-        let handStr = player.hand.map(c => c.suit + c.rank).join(' ');
-        await sendTempMessage(roomId, `[info][title]🃏 ターン進行[/title][piconname:${player.aid}] さんの番です！\n手札: ${handStr} (スコア: ${score})\n\n/#hit (引く) または /#stand (引かない) を入力してください。\n(制限1分)[/info]`);
+        
+        let handStr = "";
+        let scoreStr = "";
+        if (player.isSekigan && player.hand.length === 2) {
+            handStr = `${player.hand[0].suit}${player.hand[0].rank} ❓`;
+            scoreStr = "?";
+        } else {
+            handStr = player.hand.map(c => c.suit + c.rank).join(' ');
+            scoreStr = score;
+        }
+
+        await sendTempMessage(roomId, `[info][title]🃏 ターン進行[/title][piconname:${player.aid}] さんの番です！\n手札: ${handStr} (スコア: ${scoreStr})\n\n/#hit (引く) または /#stand (引かない) を入力してください。\n(制限1分)[/info]`);
         startGameTimer(roomId, 60000); 
         return;
     }
@@ -1325,10 +1375,9 @@ const proceedNextPokerTurn = async (roomId) => {
         let player = game.players[game.turnIndex];
         if (player.status !== 'playing') { game.turnIndex++; continue; }
         
-        let handStr = player.hand.map((c, i) => `[${i+1}] ${c.suit}${c.rank}`).join('   ');
-        let ev = getPokerRank(player.hand);
+        let handStr = player.hand.map(c => `[ ${c.suit}${c.rank} ]`).join(' ');
         
-        await sendTempMessage(roomId, `[info][title]🃏 ポーカー ターン進行[/title][piconname:${player.aid}] さんの番です！\n手札:\n${handStr}\n(現状の役: ${ev.name})\n\n交換するカードの番号を指定してください。交換しない場合は /#stand\n例: /#change 1 3 5\n(制限1分)[/info]`);
+        await sendTempMessage(roomId, `[info][title]🃏 ポーカー ターン進行[/title][piconname:${player.aid}] さんの番です！\nあなたの手札: ${handStr}\n\nそのまま勝負するなら /#call\n降りるなら /#fold を入力してください。\n(制限1分)[/info]`);
         startGameTimer(roomId, 60000); 
         return;
     }
@@ -1339,38 +1388,11 @@ const proceedBotPokerTurn = async (roomId) => {
     let game = gameState[roomId];
     if (!game) return;
 
-    game.botHand = [];
-    for(let i=0; i<5; i++) game.botHand.push(game.deck.pop());
+    game.botHand = [game.deck.pop(), game.deck.pop()];
     
-    await sendMessage(roomId, `[info][ディーラー] のターンです。\n手札を確認中...[/info]`);
-    await sleep(2500);
-    
-    let keepIndices = getPokerBotKeepIndices(game.botHand);
-    let changeIndices = [0,1,2,3,4].filter(i => !keepIndices.includes(i));
-    
-    if (changeIndices.length === 0) {
-        await sendMessage(roomId, `/#stand`);
-        await sleep(1000);
-        await sendMessage(roomId, `[info][ディーラー] スタンドしました。[/info]`);
-    } else {
-        let chgStr = changeIndices.map(i => i+1).join(' ');
-        await sendMessage(roomId, `/#change ${chgStr}`);
-        await sleep(1500);
-        
-        let newHand = [];
-        for (let i=0; i<5; i++) {
-            if (keepIndices.includes(i)) newHand[i] = game.botHand[i];
-            else newHand[i] = game.deck.pop();
-        }
-        game.botHand = newHand;
-        await sendMessage(roomId, `[info]🃏 [ディーラー] 新しいカードを引きました。[/info]`);
-        await sleep(1500);
-        await sendMessage(roomId, `/#stand`);
-        await sleep(1000);
-        await sendMessage(roomId, `[info][ディーラー] スタンドしました。[/info]`);
-    }
-    
+    await sendMessage(roomId, `[info][ディーラー] のターンです。\nディーラーはコールしました。[/info]`);
     await sleep(2000);
+    
     await resolvePoker(roomId);
 };
 
@@ -1385,9 +1407,17 @@ const proceedNextYachtTurn = async (roomId) => {
         if (player.rolls === 0) {
             await sendTempMessage(roomId, `[info][title]🎲 ヨット ターン開始[/title][piconname:${player.aid}] さんの番です！\n/#roll を入力して最初のサイコロを振ってください。\n(制限1分)[/info]`);
         } else {
-            let diceStr = player.dice.map((d, i) => `[${i+1}] 🎲${d}`).join('   ');
-            let ev = getYachtRank(player.dice);
-            await sendTempMessage(roomId, `[info][title]🎲 ヨット ターン継続 ( ${player.rolls}/3 回目 )[/title][piconname:${player.aid}]\nサイコロ:\n${diceStr}\n(現状の役: ${ev.name})\n\n/#change [番号] または /#stand\n例: /#change 1 3 5\n(制限1分)[/info]`);
+            let diceStr = "";
+            let evName = "";
+            if (player.rolls === 1 && player.isSekigan) {
+                diceStr = player.dice.map((d, i) => i < 3 ? `[${i+1}] ❓` : `[${i+1}] 🎲${d}`).join('   ');
+                evName = "?";
+            } else {
+                diceStr = player.dice.map((d, i) => `[${i+1}] 🎲${d}`).join('   ');
+                evName = getYachtRank(player.dice).name;
+            }
+            
+            await sendTempMessage(roomId, `[info][title]🎲 ヨット ターン継続 ( ${player.rolls}/3 回目 )[/title][piconname:${player.aid}]\nサイコロ:\n${diceStr}\n(現状の役: ${evName})\n\n/#change [番号] または /#stand\n例: /#change 1 3 5\n(制限1分)[/info]`);
         }
         startGameTimer(roomId, 60000); 
         return;
@@ -1678,72 +1708,6 @@ const proceedBotHighLow = async (roomId) => {
 };
 
 // --- 結果精算リゾルバー ---
-const processLifeBetResult = async (player, isWin, isDraw, roomId, multOverride = null) => {
-    if (!player.isLifeBet) return { msg: "", profit: 0 };
-    let resTxt = "";
-    let betAmt = player.lifeBetBaseAmount || 1;
-    let winAmt = 0;
-    let resType = 'lose';
-    let dealerProfit = 0;
-
-    let buffRes = await processBuffs(player.aid, isWin, !isWin && !isDraw, isDraw, multOverride || (Math.floor(Math.random() * 8) + 8), resTxt);
-    isWin = buffRes.isWin; isDraw = buffRes.isDraw;
-    let mult = buffRes.mult; resTxt = buffRes.resTxt;
-
-    if (isWin) {
-        winAmt = Math.floor(betAmt * mult);
-        
-        let { stolen, jokerMsg } = await processJoker(player.aid, winAmt, roomId);
-        let finalWin = winAmt - stolen;
-        resTxt += jokerMsg;
-        
-        await addMoney(player.aid, finalWin);
-        resTxt += `\n🎉 命賭け成功！！！ (全財産${mult}倍: +${formatNumber(finalWin)})`;
-        resType = 'win';
-        dealerProfit = -(winAmt - betAmt);
-        
-        await processButler(player.aid, winAmt, roomId);
-    } else if (isDraw) {
-        winAmt = betAmt;
-        await addMoney(player.aid, winAmt);
-        resTxt += `\n😐 引き分け (命拾い...)`;
-        resType = 'draw';
-        dealerProfit = 0;
-    } else {
-        let refunded = await processGamblerSkill(player.aid, betAmt, roomId);
-        let useRes = await tryUseItem(player.aid, '身代わりの人形');
-
-        if (refunded) {
-            resTxt += `\n💀 命賭け失敗 ➡ 🔄 逆転スキルで全額返金！(出禁回避)`;
-            resType = 'draw';
-            winAmt = betAmt;
-            dealerProfit = 0;
-        } else if (useRes.success) {
-            let loseAmt = Math.floor(betAmt / 2);
-            await addMoney(player.aid, betAmt - loseAmt); 
-            resTxt += `\n💀 命賭け失敗... だが【身代わりの人形】が身代わりとなり、追放を回避！(資産半分減少)`;
-            resType = 'lose';
-            dealerProfit = loseAmt;
-        } else {
-            await supabase.from('blacklist').insert({ account_id: player.aid });
-            await updateRoomMembers(roomId, [player.aid], 'readonly');
-            resTxt += `\n💀 命賭け失敗... 永久出禁処分`;
-            if (useRes.msg) resTxt += `\n${useRes.msg}`;
-            resType = 'lose';
-            let g = gameState[roomId];
-            if (g && g.type !== 'russian') {
-                await processOwnerSkill(player.aid, betAmt, roomId);
-                let bountyMsg = await processBounty(player.aid, betAmt, roomId);
-                resTxt += bountyMsg;
-            }
-            dealerProfit = betAmt;
-        }
-    }
-    
-    await updatePlayerStats(player.aid, betAmt, winAmt, resType, true);
-    return { msg: resTxt, profit: dealerProfit };
-};
-
 const resolveBJ = async (roomId) => {
     let game = gameState[roomId]; 
     if (!game) return; 
@@ -1775,50 +1739,45 @@ const resolveBJ = async (roomId) => {
             else isLose = true;
         }
 
-        if (player.isLifeBet) {
-            let lbRes = await processLifeBetResult(player, isWin, isDraw, roomId, isBJ ? 2.5 : 2);
-            resTxt += lbRes.msg;
-            totalDealerProfit += lbRes.profit;
-        } else {
-            let winAmtForStats = 0; let resType = 'lose';
-            
-            let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, isBJ ? 2.5 : 2, resTxt);
-            isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
-            let mult = buffRes.mult; resTxt = buffRes.resTxt;
+        let winAmtForStats = 0; let resType = 'lose';
+        
+        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, isBJ ? 2.5 : 2, resTxt, 'bj');
+        isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
+        let mult = buffRes.mult; resTxt = buffRes.resTxt;
 
-            if (isDraw) {
-                if(!resTxt) resTxt += `😐 引き分け (返金)`; 
+        if (isDraw) {
+            if(!resTxt) resTxt += `😐 引き分け (返金)`; 
+            winAmtForStats = player.bet; resType = 'draw';
+            await addMoney(player.aid, player.bet); 
+            totalDealerProfit += 0;
+        } else if (isWin) {
+            winAmt = Math.floor(player.bet * mult);
+            
+            let { stolen, jokerMsg } = await processJoker(player.aid, winAmt, roomId);
+            let finalWin = winAmt - stolen;
+            resTxt += jokerMsg;
+            
+            resTxt += isBJ && mult === 2.5 ? `\n(cracker) 勝利！ (BJ: 配当2.5倍) (+${formatNumber(finalWin)})` : `\n(cracker) 勝利！ (+${formatNumber(finalWin)})`; 
+            winAmtForStats = winAmt; resType = 'win';
+            await addMoney(player.aid, finalWin); 
+            totalDealerProfit -= (winAmt - player.bet);
+            
+            await processButler(player.aid, winAmt, roomId);
+        } else {
+            let refunded = await processGamblerSkill(player.aid, player.bet, roomId);
+            if (refunded) {
+                resTxt += `\n💀 負け ➡ 🔄 逆転スキルで返金`;
                 winAmtForStats = player.bet; resType = 'draw';
-                await addMoney(player.aid, player.bet); 
-                totalDealerProfit += 0;
-            } else if (isWin) {
-                winAmt = Math.floor(player.bet * mult);
-                
-                let { stolen, jokerMsg } = await processJoker(player.aid, winAmt, roomId);
-                let finalWin = winAmt - stolen;
-                resTxt += jokerMsg;
-                
-                resTxt += isBJ && mult === 2.5 ? `\n(cracker) 勝利！ (BJ: 配当2.5倍) (+${formatNumber(finalWin)})` : `\n(cracker) 勝利！ (+${formatNumber(finalWin)})`; 
-                winAmtForStats = winAmt; resType = 'win';
-                await addMoney(player.aid, finalWin); 
-                totalDealerProfit -= (winAmt - player.bet);
-                
-                await processButler(player.aid, winAmt, roomId);
             } else {
-                let refunded = await processGamblerSkill(player.aid, player.bet, roomId);
-                if (refunded) {
-                    resTxt += `\n💀 負け ➡ 🔄 逆転スキルで返金`;
-                    winAmtForStats = player.bet; resType = 'draw';
-                } else {
-                    resTxt += `\n💀 負け (没収)`;
-                    await processOwnerSkill(player.aid, player.bet, roomId);
-                    let bountyMsg = await processBounty(player.aid, player.bet, roomId);
-                    resTxt += bountyMsg;
-                    totalDealerProfit += player.bet;
-                }
+                resTxt += `\n💀 負け (没収)`;
+                await processOwnerSkill(player.aid, player.bet, roomId);
+                let bountyMsg = await processBounty(player.aid, player.bet, roomId);
+                resTxt += bountyMsg;
+                totalDealerProfit += player.bet;
             }
-            await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true);
         }
+        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true, roomId);
+        
         if (isWin) await updateWinStreak(player.aid, 'win', roomId);
         else if (isLose && !resTxt.includes('返金')) await updateWinStreak(player.aid, 'lose', roomId);
         
@@ -1835,67 +1794,79 @@ const resolvePoker = async (roomId) => {
     if (!game) return; 
     clearTimeout(game.timeoutId);
     
-    let botEv = getPokerRank(game.botHand);
-    let botStr = game.botHand.map(c => c.suit + c.rank).join(' ');
-    let msg = `[info][title]🃏 ポーカー 最終結果[/title]【 ディーラー 】\n確定手札: ${botStr} (${botEv.name})\n[hr]【 プレイヤー結果 】\n`;
+    let commCards = game.communityCards;
+    let commStr = commCards.map(c => `[ ${c.suit}${c.rank} ]`).join(' ');
+    
+    let botHand7 = game.botHand.concat(commCards);
+    let botEv = getBestPokerRank(botHand7);
+    let botStr = game.botHand.map(c => `[ ${c.suit}${c.rank} ]`).join(' ');
+    
+    let msg = `[info][title]🃏 テキサスホールデム 最終結果[/title]共通カード: ${commStr}\n\n【 ディーラー 】\n手札: ${botStr} ➡ 役: ${botEv.name}\n[hr]【 プレイヤー結果 】\n`;
     
     let totalDealerProfit = 0;
 
     for (let player of game.players) {
-        let pEv = getPokerRank(player.hand);
-        let pStr = player.hand.map(c => c.suit + c.rank).join(' ');
+        if (player.status === 'fold') {
+            let resTxt = `💀 フォールド (没収)`;
+            await processOwnerSkill(player.aid, player.bet, roomId);
+            let bountyMsg = await processBounty(player.aid, player.bet, roomId);
+            resTxt += bountyMsg;
+            totalDealerProfit += player.bet;
+            await updatePlayerStats(player.aid, player.bet, 0, 'lose', true, roomId);
+            msg += `[piconname:${player.aid}]: 手札 ${player.hand.map(c=>`[${c.suit}${c.rank}]`).join('')} ➡ ${resTxt}\n`;
+            continue;
+        }
+
+        let pHand7 = player.hand.concat(commCards);
+        let pEv = getBestPokerRank(pHand7);
+        let pStr = player.hand.map(c => `[ ${c.suit}${c.rank} ]`).join(' ');
         let comp = comparePoker(pEv, botEv);
         let isWin = comp > 0, isDraw = comp === 0, isLose = comp < 0;
         let resTxt = "";
         
-        if (player.isLifeBet) {
-            let lbRes = await processLifeBetResult(player, isWin, isDraw, roomId, 2.0);
-            resTxt += lbRes.msg;
-            totalDealerProfit += lbRes.profit;
-        } else {
-            let winAmtForStats = 0; let resType = 'lose';
-            
-            let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, 2.0, resTxt);
-            isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
-            let mult = buffRes.mult; resTxt = buffRes.resTxt;
+        let winAmtForStats = 0; let resType = 'lose';
+        
+        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, 2.0, resTxt, 'poker');
+        isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
+        let mult = buffRes.mult; resTxt = buffRes.resTxt;
 
-            if (isDraw) {
-                if(!resTxt) resTxt += `😐 引き分け (返金)`; 
+        if (isDraw) {
+            if(!resTxt) resTxt += `😐 引き分け (返金)`; 
+            winAmtForStats = player.bet; resType = 'draw';
+            await addMoney(player.aid, player.bet); 
+            totalDealerProfit += 0;
+        } else if (isWin) { 
+            let winAmt = Math.floor(player.bet * mult);
+            
+            let { stolen, jokerMsg } = await processJoker(player.aid, winAmt, roomId);
+            let finalWin = winAmt - stolen;
+            resTxt += jokerMsg;
+            
+            resTxt += `\n(cracker) 勝利！ (+${formatNumber(finalWin)})`; 
+            winAmtForStats = winAmt; resType = 'win';
+            await addMoney(player.aid, finalWin); 
+            totalDealerProfit -= (winAmt - player.bet);
+            
+            await processButler(player.aid, winAmt, roomId);
+        } else {
+            let refunded = await processGamblerSkill(player.aid, player.bet, roomId);
+            if (refunded) {
+                resTxt += `\n💀 負け ➡ 🔄 逆転スキルで返金`;
                 winAmtForStats = player.bet; resType = 'draw';
-                await addMoney(player.aid, player.bet); 
-                totalDealerProfit += 0;
-            } else if (isWin) { 
-                let winAmt = Math.floor(player.bet * mult);
-                
-                let { stolen, jokerMsg } = await processJoker(player.aid, winAmt, roomId);
-                let finalWin = winAmt - stolen;
-                resTxt += jokerMsg;
-                
-                resTxt += `\n(cracker) 勝利！ (+${formatNumber(finalWin)})`; 
-                winAmtForStats = winAmt; resType = 'win';
-                await addMoney(player.aid, finalWin); 
-                totalDealerProfit -= (winAmt - player.bet);
-                
-                await processButler(player.aid, winAmt, roomId);
             } else {
-                let refunded = await processGamblerSkill(player.aid, player.bet, roomId);
-                if (refunded) {
-                    resTxt += `\n💀 負け ➡ 🔄 逆転スキルで返金`;
-                    winAmtForStats = player.bet; resType = 'draw';
-                } else {
-                    resTxt += `\n💀 負け (没収)`; 
-                    await processOwnerSkill(player.aid, player.bet, roomId);
-                    let bountyMsg = await processBounty(player.aid, player.bet, roomId);
-                    resTxt += bountyMsg;
-                    totalDealerProfit += player.bet;
-                }
+                resTxt += `\n💀 負け (没収)`; 
+                await processOwnerSkill(player.aid, player.bet, roomId);
+                let bountyMsg = await processBounty(player.aid, player.bet, roomId);
+                resTxt += bountyMsg;
+                totalDealerProfit += player.bet;
             }
-            await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true);
         }
+        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true, roomId);
+        
         if (isWin) await updateWinStreak(player.aid, 'win', roomId);
         else if (isLose && !resTxt.includes('返金')) await updateWinStreak(player.aid, 'lose', roomId);
 
-        msg += `[piconname:${player.aid}]: ${pStr} (${pEv.name})\n➡ ${resTxt}\n`;
+        msg += `[piconname:${player.aid}]: 手札 ${pStr} ➡ 役: ${pEv.name}\n➡ ${resTxt}\n`;
     }
     kabuData.pendingProfit = (kabuData.pendingProfit || 0) + totalDealerProfit;
     await supabase.from('config').upsert({ key: 'kabu_data', value: JSON.stringify(kabuData) });
@@ -1926,50 +1897,45 @@ const resolveYacht = async (roomId) => {
 
         let resTxt = "";
         
-        if (player.isLifeBet) {
-            let lbRes = await processLifeBetResult(player, isWin, isDraw, roomId, 2.0);
-            resTxt += lbRes.msg;
-            totalDealerProfit += lbRes.profit;
-        } else {
-            let winAmtForStats = 0; let resType = 'lose';
-            
-            let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, 2.0, resTxt);
-            isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
-            let mult = buffRes.mult; resTxt = buffRes.resTxt;
+        let winAmtForStats = 0; let resType = 'lose';
+        
+        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, 2.0, resTxt, 'yacht');
+        isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
+        let mult = buffRes.mult; resTxt = buffRes.resTxt;
 
-            if (isDraw) {
-                if(!resTxt) resTxt += `😐 引き分け (返金)`; 
+        if (isDraw) {
+            if(!resTxt) resTxt += `😐 引き分け (返金)`; 
+            winAmtForStats = player.bet; resType = 'draw';
+            await addMoney(player.aid, player.bet); 
+            totalDealerProfit += 0;
+        } else if (isWin) { 
+            let winAmt = Math.floor(player.bet * mult);
+            
+            let { stolen, jokerMsg } = await processJoker(player.aid, winAmt, roomId);
+            let finalWin = winAmt - stolen;
+            resTxt += jokerMsg;
+            
+            resTxt += `\n(cracker) 勝利！ (+${formatNumber(finalWin)})`; 
+            winAmtForStats = winAmt; resType = 'win';
+            await addMoney(player.aid, finalWin); 
+            totalDealerProfit -= (winAmt - player.bet);
+            
+            await processButler(player.aid, winAmt, roomId);
+        } else {
+            let refunded = await processGamblerSkill(player.aid, player.bet, roomId);
+            if (refunded) {
+                resTxt += `\n💀 負け ➡ 🔄 逆転スキルで返金`;
                 winAmtForStats = player.bet; resType = 'draw';
-                await addMoney(player.aid, player.bet); 
-                totalDealerProfit += 0;
-            } else if (isWin) { 
-                let winAmt = Math.floor(player.bet * mult);
-                
-                let { stolen, jokerMsg } = await processJoker(player.aid, winAmt, roomId);
-                let finalWin = winAmt - stolen;
-                resTxt += jokerMsg;
-                
-                resTxt += `\n(cracker) 勝利！ (+${formatNumber(finalWin)})`; 
-                winAmtForStats = winAmt; resType = 'win';
-                await addMoney(player.aid, finalWin); 
-                totalDealerProfit -= (winAmt - player.bet);
-                
-                await processButler(player.aid, winAmt, roomId);
             } else {
-                let refunded = await processGamblerSkill(player.aid, player.bet, roomId);
-                if (refunded) {
-                    resTxt += `\n💀 負け ➡ 🔄 逆転スキルで返金`;
-                    winAmtForStats = player.bet; resType = 'draw';
-                } else {
-                    resTxt += `\n💀 負け (没収)`; 
-                    await processOwnerSkill(player.aid, player.bet, roomId);
-                    let bountyMsg = await processBounty(player.aid, player.bet, roomId);
-                    resTxt += bountyMsg;
-                    totalDealerProfit += player.bet;
-                }
+                resTxt += `\n💀 負け (没収)`; 
+                await processOwnerSkill(player.aid, player.bet, roomId);
+                let bountyMsg = await processBounty(player.aid, player.bet, roomId);
+                resTxt += bountyMsg;
+                totalDealerProfit += player.bet;
             }
-            await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true);
         }
+        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true, roomId);
+        
         if (isWin) await updateWinStreak(player.aid, 'win', roomId);
         else if (isLose && !resTxt.includes('返金')) await updateWinStreak(player.aid, 'lose', roomId);
 
@@ -2011,50 +1977,45 @@ const resolveButa = async (roomId) => {
             else isLose = true;
         }
 
-        if (player.isLifeBet) {
-            let lbRes = await processLifeBetResult(player, isWin, isDraw, roomId, 2.0);
-            resTxt += lbRes.msg;
-            totalDealerProfit += lbRes.profit;
-        } else {
-            let winAmtForStats = 0; let resType = 'lose';
-            
-            let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, 2.0, resTxt);
-            isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
-            let mult = buffRes.mult; resTxt = buffRes.resTxt;
+        let winAmtForStats = 0; let resType = 'lose';
+        
+        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, 2.0, resTxt, 'buta');
+        isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
+        let mult = buffRes.mult; resTxt = buffRes.resTxt;
 
-            if (isDraw) {
-                if(!resTxt) resTxt += `😐 引き分け (返金)`; 
+        if (isDraw) {
+            if(!resTxt) resTxt += `😐 引き分け (返金)`; 
+            winAmtForStats = player.bet; resType = 'draw';
+            await addMoney(player.aid, player.bet); 
+            totalDealerProfit += 0;
+        } else if (isWin) {
+            let winAmt = Math.floor(player.bet * mult); 
+            
+            let { stolen, jokerMsg } = await processJoker(player.aid, winAmt, roomId);
+            let finalWin = winAmt - stolen;
+            resTxt += jokerMsg;
+            
+            resTxt += `\n🎉 勝利！ (+${formatNumber(finalWin)})`; 
+            winAmtForStats = winAmt; resType = 'win';
+            await addMoney(player.aid, finalWin); 
+            totalDealerProfit -= (winAmt - player.bet);
+            
+            await processButler(player.aid, winAmt, roomId);
+        } else {
+            let refunded = await processGamblerSkill(player.aid, player.bet, roomId);
+            if (refunded) {
+                resTxt += `\n💀 負け ➡ 🔄 逆転スキルで返金`;
                 winAmtForStats = player.bet; resType = 'draw';
-                await addMoney(player.aid, player.bet); 
-                totalDealerProfit += 0;
-            } else if (isWin) {
-                let winAmt = Math.floor(player.bet * mult); 
-                
-                let { stolen, jokerMsg } = await processJoker(player.aid, winAmt, roomId);
-                let finalWin = winAmt - stolen;
-                resTxt += jokerMsg;
-                
-                resTxt += `\n🎉 勝利！ (+${formatNumber(finalWin)})`; 
-                winAmtForStats = winAmt; resType = 'win';
-                await addMoney(player.aid, finalWin); 
-                totalDealerProfit -= (winAmt - player.bet);
-                
-                await processButler(player.aid, winAmt, roomId);
             } else {
-                let refunded = await processGamblerSkill(player.aid, player.bet, roomId);
-                if (refunded) {
-                    resTxt += `\n💀 負け ➡ 🔄 逆転スキルで返金`;
-                    winAmtForStats = player.bet; resType = 'draw';
-                } else {
-                    resTxt += `\n💀 負け (ドボン・没収)`; 
-                    await processOwnerSkill(player.aid, player.bet, roomId);
-                    let bountyMsg = await processBounty(player.aid, player.bet, roomId);
-                    resTxt += bountyMsg;
-                    totalDealerProfit += player.bet;
-                }
-            } 
-            await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true);
-        }
+                resTxt += `\n💀 負け (ドボン・没収)`; 
+                await processOwnerSkill(player.aid, player.bet, roomId);
+                let bountyMsg = await processBounty(player.aid, player.bet, roomId);
+                resTxt += bountyMsg;
+                totalDealerProfit += player.bet;
+            }
+        } 
+        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true, roomId);
+        
         if (isWin) await updateWinStreak(player.aid, 'win', roomId);
         else if (isLose && !resTxt.includes('返金')) await updateWinStreak(player.aid, 'lose', roomId);
 
@@ -2083,50 +2044,45 @@ const resolveChinchiro = async (roomId) => {
         let isLose = !isWin && !isDraw;
         let resTxt = "";
 
-        if (player.isLifeBet) {
-            let lbRes = await processLifeBetResult(player, isWin, isDraw, roomId, r.mult > 0 ? r.mult + 1 : 1);
-            resTxt += lbRes.msg;
-            totalDealerProfit += lbRes.profit;
-        } else {
-            let winAmtForStats = 0; let resType = 'lose';
-            
-            let bMult = r.mult > 0 ? r.mult + 1 : 1;
-            let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, bMult, resTxt);
-            isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
-            let mult = buffRes.mult; resTxt = buffRes.resTxt;
+        let winAmtForStats = 0; let resType = 'lose';
+        
+        let bMult = r.mult > 0 ? r.mult + 1 : 1;
+        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, bMult, resTxt, 'cc');
+        isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
+        let mult = buffRes.mult; resTxt = buffRes.resTxt;
 
-            if (isDraw) {
-                if(!resTxt) resTxt += `😐 引き分け (返金)`; 
-                await addMoney(player.aid, player.bet); 
+        if (isDraw) {
+            if(!resTxt) resTxt += `😐 引き分け (返金)`; 
+            await addMoney(player.aid, player.bet); 
+            winAmtForStats = player.bet; resType = 'draw';
+            totalDealerProfit += 0;
+        } else if (isWin) { 
+            let winAmt = Math.floor(player.bet * mult);
+            let { stolen, jokerMsg } = await processJoker(player.aid, winAmt, roomId);
+            let finalWin = winAmt - stolen;
+            resTxt += jokerMsg;
+            
+            await addMoney(player.aid, finalWin); 
+            winAmtForStats = winAmt; resType = 'win';
+            resTxt += `\n(cracker) 勝ち！ (+${formatNumber(finalWin)})`; 
+            totalDealerProfit -= (winAmt - player.bet);
+            
+            await processButler(player.aid, winAmt, roomId);
+        } else { 
+            let refunded = await processGamblerSkill(player.aid, player.bet, roomId);
+            if (refunded) {
+                resTxt += `\n💀 負け ➡ 🔄 逆転スキルで返金`;
                 winAmtForStats = player.bet; resType = 'draw';
-                totalDealerProfit += 0;
-            } else if (isWin) { 
-                let winAmt = Math.floor(player.bet * mult);
-                let { stolen, jokerMsg } = await processJoker(player.aid, winAmt, roomId);
-                let finalWin = winAmt - stolen;
-                resTxt += jokerMsg;
-                
-                await addMoney(player.aid, finalWin); 
-                winAmtForStats = winAmt; resType = 'win';
-                resTxt += `\n(cracker) 勝ち！ (+${formatNumber(finalWin)})`; 
-                totalDealerProfit -= (winAmt - player.bet);
-                
-                await processButler(player.aid, winAmt, roomId);
-            } else { 
-                let refunded = await processGamblerSkill(player.aid, player.bet, roomId);
-                if (refunded) {
-                    resTxt += `\n💀 負け ➡ 🔄 逆転スキルで返金`;
-                    winAmtForStats = player.bet; resType = 'draw';
-                } else {
-                    resTxt += `\n💀 負け (没収)`; 
-                    await processOwnerSkill(player.aid, player.bet, roomId);
-                    let bountyMsg = await processBounty(player.aid, player.bet, roomId);
-                    resTxt += bountyMsg;
-                    totalDealerProfit += player.bet;
-                }
+            } else {
+                resTxt += `\n💀 負け (没収)`; 
+                await processOwnerSkill(player.aid, player.bet, roomId);
+                let bountyMsg = await processBounty(player.aid, player.bet, roomId);
+                resTxt += bountyMsg;
+                totalDealerProfit += player.bet;
             }
-            await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true);
         }
+        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true, roomId);
+        
         if (isWin) await updateWinStreak(player.aid, 'win', roomId);
         else if (isLose && !resTxt.includes('返金')) await updateWinStreak(player.aid, 'lose', roomId);
 
@@ -2162,49 +2118,44 @@ const resolveChouhan = async (roomId, mId) => {
         let isDraw = false;
         let resTxt = "";
         
-        if (player.isLifeBet) {
-            let lbRes = await processLifeBetResult(player, isWin, isDraw, roomId, 2.0);
-            resTxt += lbRes.msg;
-            totalDealerProfit += lbRes.profit;
-        } else {
-            let winAmtForStats = 0; let resType = 'lose';
-            
-            let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, 2.0, resTxt);
-            isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
-            let mult = buffRes.mult; resTxt = buffRes.resTxt;
+        let winAmtForStats = 0; let resType = 'lose';
+        
+        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, 2.0, resTxt, 'chouhan');
+        isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
+        let mult = buffRes.mult; resTxt = buffRes.resTxt;
 
-            if (isDraw) {
-                if(!resTxt) resTxt += `😐 引き分け (返金)`; 
-                await addMoney(player.aid, player.bet); 
+        if (isDraw) {
+            if(!resTxt) resTxt += `😐 引き分け (返金)`; 
+            await addMoney(player.aid, player.bet); 
+            winAmtForStats = player.bet; resType = 'draw';
+        } else if (isWin) { 
+            let winAmt = Math.floor(player.bet * mult);
+            
+            let { stolen, jokerMsg } = await processJoker(player.aid, winAmt, roomId);
+            let finalWin = winAmt - stolen;
+            resTxt += jokerMsg;
+            
+            await addMoney(player.aid, finalWin); 
+            winAmtForStats = winAmt; resType = 'win';
+            resTxt += `\n(cracker) 的中！ (+${formatNumber(finalWin)})`; 
+            totalDealerProfit -= (winAmt - player.bet);
+            
+            await processButler(player.aid, winAmt, roomId);
+        } else { 
+            let refunded = await processGamblerSkill(player.aid, player.bet, roomId);
+            if (refunded) {
+                resTxt += `\n💀 はずれ ➡ 🔄 逆転スキルで返金`;
                 winAmtForStats = player.bet; resType = 'draw';
-            } else if (isWin) { 
-                let winAmt = Math.floor(player.bet * mult);
-                
-                let { stolen, jokerMsg } = await processJoker(player.aid, winAmt, roomId);
-                let finalWin = winAmt - stolen;
-                resTxt += jokerMsg;
-                
-                await addMoney(player.aid, finalWin); 
-                winAmtForStats = winAmt; resType = 'win';
-                resTxt += `\n(cracker) 的中！ (+${formatNumber(finalWin)})`; 
-                totalDealerProfit -= (winAmt - player.bet);
-                
-                await processButler(player.aid, winAmt, roomId);
-            } else { 
-                let refunded = await processGamblerSkill(player.aid, player.bet, roomId);
-                if (refunded) {
-                    resTxt += `\n💀 はずれ ➡ 🔄 逆転スキルで返金`;
-                    winAmtForStats = player.bet; resType = 'draw';
-                } else {
-                    resTxt += `\n💀 はずれ (没収)`; 
-                    await processOwnerSkill(player.aid, player.bet, roomId);
-                    let bountyMsg = await processBounty(player.aid, player.bet, roomId);
-                    resTxt += bountyMsg;
-                    totalDealerProfit += player.bet;
-                }
+            } else {
+                resTxt += `\n💀 はずれ (没収)`; 
+                await processOwnerSkill(player.aid, player.bet, roomId);
+                let bountyMsg = await processBounty(player.aid, player.bet, roomId);
+                resTxt += bountyMsg;
+                totalDealerProfit += player.bet;
             }
-            await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true);
         }
+        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true, roomId);
+        
         if (isWin) await updateWinStreak(player.aid, 'win', roomId);
         else if (isLose && !resTxt.includes('返金')) await updateWinStreak(player.aid, 'lose', roomId);
 
@@ -2248,49 +2199,44 @@ const resolveSicbo = async (roomId, mId) => {
         let resTxt = "";
         let choiceName = player.choice === 'any' ? "ゾロ目" : (player.choice === 'dai' ? "大" : "小");
 
-        if (player.isLifeBet) {
-            let lbRes = await processLifeBetResult(player, isWin, isDraw, roomId, bMult);
-            resTxt += lbRes.msg;
-            totalDealerProfit += lbRes.profit;
+        let winAmtForStats = 0; let resType = 'lose';
+
+        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, bMult, resTxt, 'sicbo');
+        isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
+        let mult = buffRes.mult; resTxt = buffRes.resTxt;
+
+        if (isDraw) {
+            if(!resTxt) resTxt += `😐 引き分け (返金)`; 
+            await addMoney(player.aid, player.bet); 
+            winAmtForStats = player.bet; resType = 'draw';
+        } else if (isWin) {
+            let winAmt = Math.floor(player.bet * mult);
+            
+            let { stolen, jokerMsg } = await processJoker(player.aid, winAmt, roomId);
+            let finalWin = winAmt - stolen;
+            resTxt += jokerMsg;
+            
+            await addMoney(player.aid, finalWin);
+            winAmtForStats = winAmt; resType = 'win';
+            resTxt += `\n(cracker) 的中！ (${mult}倍) (+${formatNumber(finalWin)})`;
+            totalDealerProfit -= (winAmt - player.bet);
+            
+            await processButler(player.aid, winAmt, roomId);
         } else {
-            let winAmtForStats = 0; let resType = 'lose';
-
-            let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, bMult, resTxt);
-            isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
-            let mult = buffRes.mult; resTxt = buffRes.resTxt;
-
-            if (isDraw) {
-                if(!resTxt) resTxt += `😐 引き分け (返金)`; 
-                await addMoney(player.aid, player.bet); 
+            let refunded = await processGamblerSkill(player.aid, player.bet, roomId);
+            if (refunded) {
+                resTxt += `\n💀 はずれ ➡ 🔄 逆転スキルで返金`;
                 winAmtForStats = player.bet; resType = 'draw';
-            } else if (isWin) {
-                let winAmt = Math.floor(player.bet * mult);
-                
-                let { stolen, jokerMsg } = await processJoker(player.aid, winAmt, roomId);
-                let finalWin = winAmt - stolen;
-                resTxt += jokerMsg;
-                
-                await addMoney(player.aid, finalWin);
-                winAmtForStats = winAmt; resType = 'win';
-                resTxt += `\n(cracker) 的中！ (${mult}倍) (+${formatNumber(finalWin)})`;
-                totalDealerProfit -= (winAmt - player.bet);
-                
-                await processButler(player.aid, winAmt, roomId);
             } else {
-                let refunded = await processGamblerSkill(player.aid, player.bet, roomId);
-                if (refunded) {
-                    resTxt += `\n💀 はずれ ➡ 🔄 逆転スキルで返金`;
-                    winAmtForStats = player.bet; resType = 'draw';
-                } else {
-                    resTxt += `\n💀 はずれ (没収)`;
-                    await processOwnerSkill(player.aid, player.bet, roomId);
-                    let bountyMsg = await processBounty(player.aid, player.bet, roomId);
-                    resTxt += bountyMsg;
-                    totalDealerProfit += player.bet;
-                }
+                resTxt += `\n💀 はずれ (没収)`;
+                await processOwnerSkill(player.aid, player.bet, roomId);
+                let bountyMsg = await processBounty(player.aid, player.bet, roomId);
+                resTxt += bountyMsg;
+                totalDealerProfit += player.bet;
             }
-            await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true);
         }
+        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true, roomId);
+        
         if (isWin) await updateWinStreak(player.aid, 'win', roomId);
         else if (isLose && !resTxt.includes('返金')) await updateWinStreak(player.aid, 'lose', roomId);
 
@@ -2321,49 +2267,44 @@ const resolveRoulette = async (roomId, resultNum) => {
         const { data: pD } = await supabase.from('players').select('job').eq('account_id', player.aid).single();
         if (bMult === 2 && pD && pD.job === '数学者') bMult = 2.2;
 
-        if (player.isLifeBet) {
-            let lbRes = await processLifeBetResult(player, isWin, isDraw, roomId, bMult);
-            resTxt += lbRes.msg;
-            totalDealerProfit += lbRes.profit;
-        } else {
-            let winAmtForStats = 0; let resType = 'lose';
-            
-            let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, bMult, resTxt);
-            isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
-            let mult = buffRes.mult; resTxt = buffRes.resTxt;
+        let winAmtForStats = 0; let resType = 'lose';
+        
+        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, bMult, resTxt, 'rolet');
+        isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
+        let mult = buffRes.mult; resTxt = buffRes.resTxt;
 
-            if (isDraw) {
-                if(!resTxt) resTxt += `😐 引き分け (返金)`; 
-                await addMoney(player.aid, player.bet); 
+        if (isDraw) {
+            if(!resTxt) resTxt += `😐 引き分け (返金)`; 
+            await addMoney(player.aid, player.bet); 
+            winAmtForStats = player.bet; resType = 'draw';
+        } else if (isWin) { 
+            let winAmt = Math.floor(player.bet * mult);
+            
+            let { stolen, jokerMsg } = await processJoker(player.aid, winAmt, roomId);
+            let finalWin = winAmt - stolen;
+            resTxt += jokerMsg;
+            
+            await addMoney(player.aid, finalWin); 
+            winAmtForStats = winAmt; resType = 'win';
+            resTxt += `\n(cracker) 的中！ (${mult}倍) (+${formatNumber(finalWin)})`; 
+            totalDealerProfit -= (winAmt - player.bet);
+            
+            await processButler(player.aid, winAmt, roomId);
+        } else { 
+            let refunded = await processGamblerSkill(player.aid, player.bet, roomId);
+            if (refunded) {
+                resTxt += `\n💀 はずれ ➡ 🔄 逆転スキルで返金`;
                 winAmtForStats = player.bet; resType = 'draw';
-            } else if (isWin) { 
-                let winAmt = Math.floor(player.bet * mult);
-                
-                let { stolen, jokerMsg } = await processJoker(player.aid, winAmt, roomId);
-                let finalWin = winAmt - stolen;
-                resTxt += jokerMsg;
-                
-                await addMoney(player.aid, finalWin); 
-                winAmtForStats = winAmt; resType = 'win';
-                resTxt += `\n(cracker) 的中！ (${mult}倍) (+${formatNumber(finalWin)})`; 
-                totalDealerProfit -= (winAmt - player.bet);
-                
-                await processButler(player.aid, winAmt, roomId);
-            } else { 
-                let refunded = await processGamblerSkill(player.aid, player.bet, roomId);
-                if (refunded) {
-                    resTxt += `\n💀 はずれ ➡ 🔄 逆転スキルで返金`;
-                    winAmtForStats = player.bet; resType = 'draw';
-                } else {
-                    resTxt += `\n💀 はずれ (没収)`; 
-                    await processOwnerSkill(player.aid, player.bet, roomId);
-                    let bountyMsg = await processBounty(player.aid, player.bet, roomId);
-                    resTxt += bountyMsg;
-                    totalDealerProfit += player.bet;
-                }
+            } else {
+                resTxt += `\n💀 はずれ (没収)`; 
+                await processOwnerSkill(player.aid, player.bet, roomId);
+                let bountyMsg = await processBounty(player.aid, player.bet, roomId);
+                resTxt += bountyMsg;
+                totalDealerProfit += player.bet;
             }
-            await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true);
         }
+        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true, roomId);
+        
         if (isWin) await updateWinStreak(player.aid, 'win', roomId);
         else if (isLose && !resTxt.includes('返金')) await updateWinStreak(player.aid, 'lose', roomId);
 
@@ -2408,49 +2349,44 @@ const resolveDerby = async (roomId, mId) => {
         let isDraw = false;
         let resTxt = "";
 
-        if (player.isLifeBet) {
-            let lbRes = await processLifeBetResult(player, isWin, isDraw, roomId, odd);
-            resTxt += lbRes.msg;
-            totalDealerProfit += lbRes.profit;
-        } else {
-            let winAmtForStats = 0; let resType = 'lose';
-            
-            let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, odd, resTxt);
-            isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
-            let mult = buffRes.mult; resTxt = buffRes.resTxt;
+        let winAmtForStats = 0; let resType = 'lose';
+        
+        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, odd, resTxt, 'derby');
+        isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
+        let mult = buffRes.mult; resTxt = buffRes.resTxt;
 
-            if (isDraw) {
-                if(!resTxt) resTxt += `😐 引き分け (返金)\n`; 
-                await addMoney(player.aid, player.bet); 
+        if (isDraw) {
+            if(!resTxt) resTxt += `😐 引き分け (返金)\n`; 
+            await addMoney(player.aid, player.bet); 
+            winAmtForStats = player.bet; resType = 'draw';
+        } else if (isWin) { 
+            let winAmt = Math.floor(player.bet * mult); 
+            
+            let { stolen, jokerMsg } = await processJoker(player.aid, winAmt, roomId);
+            let finalWin = winAmt - stolen;
+            resTxt += jokerMsg;
+            
+            await addMoney(player.aid, finalWin); 
+            winAmtForStats = winAmt; resType = 'win';
+            resTxt += `\n(cracker) 的中！ (+${formatNumber(finalWin)} コイン)\n`; 
+            totalDealerProfit -= (winAmt - player.bet);
+            
+            await processButler(player.aid, winAmt, roomId);
+        } else { 
+            let refunded = await processGamblerSkill(player.aid, player.bet, roomId);
+            if (refunded) {
+                resTxt += `\n💀 はずれ ➡ 🔄 逆転スキルで返金\n`;
                 winAmtForStats = player.bet; resType = 'draw';
-            } else if (isWin) { 
-                let winAmt = Math.floor(player.bet * mult); 
-                
-                let { stolen, jokerMsg } = await processJoker(player.aid, winAmt, roomId);
-                let finalWin = winAmt - stolen;
-                resTxt += jokerMsg;
-                
-                await addMoney(player.aid, finalWin); 
-                winAmtForStats = winAmt; resType = 'win';
-                resTxt += `\n(cracker) 的中！ (+${formatNumber(finalWin)} コイン)\n`; 
-                totalDealerProfit -= (winAmt - player.bet);
-                
-                await processButler(player.aid, winAmt, roomId);
-            } else { 
-                let refunded = await processGamblerSkill(player.aid, player.bet, roomId);
-                if (refunded) {
-                    resTxt += `\n💀 はずれ ➡ 🔄 逆転スキルで返金\n`;
-                    winAmtForStats = player.bet; resType = 'draw';
-                } else {
-                    resTxt += `\n💀 はずれ (没収)\n`; 
-                    await processOwnerSkill(player.aid, player.bet, roomId);
-                    let bountyMsg = await processBounty(player.aid, player.bet, roomId);
-                    resTxt += bountyMsg;
-                    totalDealerProfit += player.bet;
-                }
+            } else {
+                resTxt += `\n💀 はずれ (没収)\n`; 
+                await processOwnerSkill(player.aid, player.bet, roomId);
+                let bountyMsg = await processBounty(player.aid, player.bet, roomId);
+                resTxt += bountyMsg;
+                totalDealerProfit += player.bet;
             }
-            await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true);
         }
+        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true, roomId);
+        
         if (isWin) await updateWinStreak(player.aid, 'win', roomId);
         else if (isLose && !resTxt.includes('返金')) await updateWinStreak(player.aid, 'lose', roomId);
 
@@ -2479,49 +2415,44 @@ const resolveCrash = async (roomId, mId) => {
         let isDraw = false;
         let resTxt = "";
 
-        if (player.isLifeBet) {
-            let lbRes = await processLifeBetResult(player, isWin, isDraw, roomId, targetMult);
-            resTxt += lbRes.msg;
-            totalDealerProfit += lbRes.profit;
-        } else {
-            let winAmtForStats = 0; let resType = 'lose';
-            
-            let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, targetMult, resTxt);
-            isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
-            let mult = buffRes.mult; resTxt = buffRes.resTxt;
+        let winAmtForStats = 0; let resType = 'lose';
+        
+        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, targetMult, resTxt, 'crash');
+        isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
+        let mult = buffRes.mult; resTxt = buffRes.resTxt;
 
-            if (isDraw) {
-                if(!resTxt) resTxt += `😐 引き分け (返金)\n`; 
-                await addMoney(player.aid, player.bet); 
+        if (isDraw) {
+            if(!resTxt) resTxt += `😐 引き分け (返金)\n`; 
+            await addMoney(player.aid, player.bet); 
+            winAmtForStats = player.bet; resType = 'draw';
+        } else if (isWin) { 
+            let winAmt = Math.floor(player.bet * mult);
+            
+            let { stolen, jokerMsg } = await processJoker(player.aid, winAmt, roomId);
+            let finalWin = winAmt - stolen;
+            resTxt += jokerMsg;
+            
+            await addMoney(player.aid, finalWin); 
+            winAmtForStats = winAmt; resType = 'win';
+            resTxt += `\n(cracker) 利確成功！ (${mult}x) (+${formatNumber(finalWin)})`; 
+            totalDealerProfit -= (winAmt - player.bet);
+            
+            await processButler(player.aid, winAmt, roomId);
+        } else { 
+            let refunded = await processGamblerSkill(player.aid, player.bet, roomId);
+            if (refunded) {
+                resTxt += `\n💀 クラッシュ ➡ 🔄 逆転スキルで返金`;
                 winAmtForStats = player.bet; resType = 'draw';
-            } else if (isWin) { 
-                let winAmt = Math.floor(player.bet * mult);
-                
-                let { stolen, jokerMsg } = await processJoker(player.aid, winAmt, roomId);
-                let finalWin = winAmt - stolen;
-                resTxt += jokerMsg;
-                
-                await addMoney(player.aid, finalWin); 
-                winAmtForStats = winAmt; resType = 'win';
-                resTxt += `\n(cracker) 利確成功！ (${mult}x) (+${formatNumber(finalWin)})`; 
-                totalDealerProfit -= (winAmt - player.bet);
-                
-                await processButler(player.aid, winAmt, roomId);
-            } else { 
-                let refunded = await processGamblerSkill(player.aid, player.bet, roomId);
-                if (refunded) {
-                    resTxt += `\n💀 クラッシュ ➡ 🔄 逆転スキルで返金`;
-                    winAmtForStats = player.bet; resType = 'draw';
-                } else {
-                    resTxt += `\n💀 クラッシュ (没収)`; 
-                    await processOwnerSkill(player.aid, player.bet, roomId);
-                    let bountyMsg = await processBounty(player.aid, player.bet, roomId);
-                    resTxt += bountyMsg;
-                    totalDealerProfit += player.bet;
-                }
+            } else {
+                resTxt += `\n💀 クラッシュ (没収)`; 
+                await processOwnerSkill(player.aid, player.bet, roomId);
+                let bountyMsg = await processBounty(player.aid, player.bet, roomId);
+                resTxt += bountyMsg;
+                totalDealerProfit += player.bet;
             }
-            await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true);
         }
+        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true, roomId);
+        
         if (isWin) await updateWinStreak(player.aid, 'win', roomId);
         else if (isLose && !resTxt.includes('返金')) await updateWinStreak(player.aid, 'lose', roomId);
 
@@ -2563,50 +2494,45 @@ const resolveHighLow = async (roomId, mId) => {
 
         let resTxt = "";
 
-        if (player.isLifeBet) {
-            let lbRes = await processLifeBetResult(player, isWin, isDraw, roomId, 2.0);
-            resTxt += lbRes.msg;
-            totalDealerProfit += lbRes.profit;
-        } else {
-            let winAmtForStats = 0; let resType = 'lose';
-            
-            let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, 2.0, resTxt);
-            isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
-            let mult = buffRes.mult; resTxt = buffRes.resTxt;
+        let winAmtForStats = 0; let resType = 'lose';
+        
+        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, 2.0, resTxt, 'highlow');
+        isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
+        let mult = buffRes.mult; resTxt = buffRes.resTxt;
 
-            if (isDraw) {
-                if(!resTxt) resTxt += `😐 引き分け (返金)`; 
+        if (isDraw) {
+            if(!resTxt) resTxt += `😐 引き分け (返金)`; 
+            winAmtForStats = player.bet; resType = 'draw';
+            await addMoney(player.aid, player.bet); 
+            totalDealerProfit += 0;
+        } else if (isWin) { 
+            let winAmt = Math.floor(player.bet * mult);
+            
+            let { stolen, jokerMsg } = await processJoker(player.aid, winAmt, roomId);
+            let finalWin = winAmt - stolen;
+            resTxt += jokerMsg;
+            
+            await addMoney(player.aid, finalWin); 
+            winAmtForStats = winAmt; resType = 'win';
+            resTxt += `\n(cracker) 的中！ (+${formatNumber(finalWin)})`; 
+            totalDealerProfit -= (winAmt - player.bet);
+            
+            await processButler(player.aid, winAmt, roomId);
+        } else { 
+            let refunded = await processGamblerSkill(player.aid, player.bet, roomId);
+            if (refunded) {
+                resTxt += `\n💀 はずれ ➡ 🔄 逆転スキルで返金`;
                 winAmtForStats = player.bet; resType = 'draw';
-                await addMoney(player.aid, player.bet); 
-                totalDealerProfit += 0;
-            } else if (isWin) { 
-                let winAmt = Math.floor(player.bet * mult);
-                
-                let { stolen, jokerMsg } = await processJoker(player.aid, winAmt, roomId);
-                let finalWin = winAmt - stolen;
-                resTxt += jokerMsg;
-                
-                await addMoney(player.aid, finalWin); 
-                winAmtForStats = winAmt; resType = 'win';
-                resTxt += `\n(cracker) 的中！ (+${formatNumber(finalWin)})`; 
-                totalDealerProfit -= (winAmt - player.bet);
-                
-                await processButler(player.aid, winAmt, roomId);
-            } else { 
-                let refunded = await processGamblerSkill(player.aid, player.bet, roomId);
-                if (refunded) {
-                    resTxt += `\n💀 はずれ ➡ 🔄 逆転スキルで返金`;
-                    winAmtForStats = player.bet; resType = 'draw';
-                } else {
-                    resTxt += `\n💀 はずれ (没収)`; 
-                    await processOwnerSkill(player.aid, player.bet, roomId);
-                    let bountyMsg = await processBounty(player.aid, player.bet, roomId);
-                    resTxt += bountyMsg;
-                    totalDealerProfit += player.bet;
-                }
+            } else {
+                resTxt += `\n💀 はずれ (没収)`; 
+                await processOwnerSkill(player.aid, player.bet, roomId);
+                let bountyMsg = await processBounty(player.aid, player.bet, roomId);
+                resTxt += bountyMsg;
+                totalDealerProfit += player.bet;
             }
-            await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true);
         }
+        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true, roomId);
+        
         if (isWin) await updateWinStreak(player.aid, 'win', roomId);
         else if (!isDraw && !resTxt.includes('返金')) await updateWinStreak(player.aid, 'lose', roomId);
 
@@ -2647,49 +2573,44 @@ const resolveDaifugo = async (roomId) => {
             let isLose = !isWin;
             let isDraw = false;
 
-            if (p.isLifeBet) {
-                let lbRes = await processLifeBetResult(p, isWin, isDraw, roomId, defaultMult);
-                resTxt += lbRes.msg;
-                totalDealerProfit += lbRes.profit;
-            } else {
-                let winAmtForStats = 0; let resType = 'lose';
-                
-                let buffRes = await processBuffs(p.aid, isWin, isLose, isDraw, defaultMult, resTxt);
-                isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
-                let mult = buffRes.mult; resTxt = buffRes.resTxt;
+            let winAmtForStats = 0; let resType = 'lose';
+            
+            let buffRes = await processBuffs(p.aid, isWin, isLose, isDraw, defaultMult, resTxt, 'daifugo');
+            isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
+            let mult = buffRes.mult; resTxt = buffRes.resTxt;
 
-                if (isDraw) {
-                    if(!resTxt) resTxt += `😐 引き分け (返金)\n`; 
-                    await addMoney(p.aid, p.bet); 
+            if (isDraw) {
+                if(!resTxt) resTxt += `😐 引き分け (返金)\n`; 
+                await addMoney(p.aid, p.bet); 
+                winAmtForStats = p.bet; resType = 'draw';
+            } else if (isWin) {
+                let winAmt = Math.floor(p.bet * mult);
+                
+                let { stolen, jokerMsg } = await processJoker(p.aid, winAmt, roomId);
+                let finalWin = winAmt - stolen;
+                resTxt += jokerMsg;
+                
+                await addMoney(p.aid, finalWin);
+                winAmtForStats = winAmt; resType = 'win';
+                resTxt += `\n(cracker) ${rName}！ (${mult}倍) (+${formatNumber(finalWin)})`;
+                totalDealerProfit -= (winAmt - p.bet);
+                
+                await processButler(p.aid, winAmt, roomId);
+            } else {
+                let refunded = await processGamblerSkill(p.aid, p.bet, roomId);
+                if (refunded) {
+                    resTxt += `\n💀 ${rName} ➡ 🔄 逆転スキルで返金`;
                     winAmtForStats = p.bet; resType = 'draw';
-                } else if (isWin) {
-                    let winAmt = Math.floor(p.bet * mult);
-                    
-                    let { stolen, jokerMsg } = await processJoker(p.aid, winAmt, roomId);
-                    let finalWin = winAmt - stolen;
-                    resTxt += jokerMsg;
-                    
-                    await addMoney(p.aid, finalWin);
-                    winAmtForStats = winAmt; resType = 'win';
-                    resTxt += `\n(cracker) ${rName}！ (${mult}倍) (+${formatNumber(finalWin)})`;
-                    totalDealerProfit -= (winAmt - p.bet);
-                    
-                    await processButler(p.aid, winAmt, roomId);
                 } else {
-                    let refunded = await processGamblerSkill(p.aid, p.bet, roomId);
-                    if (refunded) {
-                        resTxt += `\n💀 ${rName} ➡ 🔄 逆転スキルで返金`;
-                        winAmtForStats = p.bet; resType = 'draw';
-                    } else {
-                        resTxt += `\n💀 ${rName}... (没収)`;
-                        await processOwnerSkill(p.aid, p.bet, roomId);
-                        let bountyMsg = await processBounty(p.aid, p.bet, roomId);
-                        resTxt += bountyMsg;
-                        totalDealerProfit += p.bet;
-                    }
+                    resTxt += `\n💀 ${rName}... (没収)`;
+                    await processOwnerSkill(p.aid, p.bet, roomId);
+                    let bountyMsg = await processBounty(p.aid, p.bet, roomId);
+                    resTxt += bountyMsg;
+                    totalDealerProfit += p.bet;
                 }
-                await updatePlayerStats(p.aid, p.bet, winAmtForStats, resType, true);
             }
+            await updatePlayerStats(p.aid, p.bet, winAmtForStats, resType, true, roomId);
+            
             if (isWin) await updateWinStreak(p.aid, 'win', roomId);
             else if (isLose && !resTxt.includes('返金')) await updateWinStreak(p.aid, 'lose', roomId);
             msg += `${i+1}位: [piconname:${p.aid}] ➡ ${resTxt}\n`;
@@ -2702,7 +2623,6 @@ const resolveDaifugo = async (roomId) => {
     await sendMessage(roomId, msg + "[/info]");
     gameState[roomId] = null;
 };
-
 // --- Webhook Endpoint ---
 app.post('/webhook', (req, res) => {
     if (!verifySignature(req)) return res.status(401).send('Invalid Signature');
@@ -2974,7 +2894,7 @@ app.post('/webhook', (req, res) => {
                 let dq = js.daily_quests;
                 
                 let q1 = dq.work_count >= 3;
-                let q2 = dq.work_count >= 10;
+                let q2 = dq.work_count >= 8;
                 let q3 = dq.slot_count >= 1;
                 let q4 = dq.slot_count >= 3;
                 let q5 = dq.table_win_count >= 1;
@@ -2985,7 +2905,7 @@ app.post('/webhook', (req, res) => {
                 let completedCount = [q1,q2,q3,q4,q5,q6,q7,q8].filter(x => x).length;
                 let msg = `[info][title]📜 今日のデイリークエスト[/title]`;
                 msg += `[ ${q1 ? '✅' : '　'} ] 仕事を3回する (${Math.min(dq.work_count,3)}/3)\n`;
-                msg += `[ ${q2 ? '✅' : '　'} ] 仕事を10回する (${Math.min(dq.work_count,10)}/10)\n`;
+                msg += `[ ${q2 ? '✅' : '　'} ] 仕事を8回する (${Math.min(dq.work_count,8)}/8)\n`;
                 msg += `[ ${q3 ? '✅' : '　'} ] スロットを1回する (${Math.min(dq.slot_count,1)}/1)\n`;
                 msg += `[ ${q4 ? '✅' : '　'} ] スロットを3回する (${Math.min(dq.slot_count,3)}/3)\n`;
                 msg += `[ ${q5 ? '✅' : '　'} ] テーブルGで1回勝つ (${Math.min(dq.table_win_count,1)}/1)\n`;
@@ -3000,13 +2920,13 @@ app.post('/webhook', (req, res) => {
                     getMoney += 10000;
                     dq.silver_claimed = true;
                     getMsg += `\n🥈 銀のデイリーボーナス (10,000 コイン) を獲得しました！`;
-                    addBadge(senderId, 'クエスト見習い');
+                    addBadge(senderId, 'クエスト見習い', roomId);
                 }
                 if (completedCount >= 8 && !dq.gold_claimed) {
                     getMoney += 50000;
                     dq.gold_claimed = true;
                     getMsg += `\n🥇 金のデイリーボーナス (50,000 コイン) を獲得しました！`;
-                    addBadge(senderId, 'クエストマスター');
+                    addBadge(senderId, 'クエストマスター', roomId);
                 }
 
                 if (getMoney > 0) {
@@ -3046,7 +2966,7 @@ app.post('/webhook', (req, res) => {
                 await supabase.from('players').update(updates).eq('account_id', senderId);
 
                 activePachinko[senderId] = { playing: true, skip: false };
-                await updatePlayerStats(senderId, amt, 0, 'draw', false);
+                await updatePlayerStats(senderId, amt, 0, 'draw', false, roomId);
 
                 let totalPayout = 0;
                 let maxStreak = 0;
@@ -3124,7 +3044,7 @@ app.post('/webhook', (req, res) => {
                     if (hitFound) {
                         if (mId && !activePachinko[senderId].skip) {
                             await sleep(1000);
-                            await editMessage(roomId, mId, `[info][title]🎰 パチンコ[/title][piconname:${senderId}]\n🎯 大当たり！！！\n\n⚡ RUSH突入！ (継続率70%)[/info]`);
+                            await editMessage(roomId, mId, currentMsg + `\n🎯 大当たり！！！\n\n⚡ RUSH突入！ (継続率70%)[/info]`);
                             await sleep(2000);
                         }
 
@@ -3139,7 +3059,7 @@ app.post('/webhook', (req, res) => {
                         if (streak > maxStreak) maxStreak = streak;
 
                         if (mId && !activePachinko[senderId].skip) {
-                            await editMessage(roomId, mId, `[info][title]🎰 パチンコ[/title][piconname:${senderId}]\n🎯 大当たり！！！\n⚡ RUSH終了\n\n🔥 ${streak} 連チャン！\n💰 一撃獲得: ${formatNumber(rushPayout)} コイン\n(引き続き残玉を消化します...)[/info]`);
+                            await editMessage(roomId, mId, currentMsg + `\n🎯 大当たり！！！\n⚡ RUSH終了\n\n🔥 ${streak} 連チャン！\n💰 一撃獲得: ${formatNumber(rushPayout)} コイン\n(引き続き残玉を消化します...)[/info]`);
                             await sleep(2000);
                         }
                     }
@@ -3152,7 +3072,7 @@ app.post('/webhook', (req, res) => {
                     if (remSpins > 0) await updateQuest(senderId, 'pachinko_spin_count', remSpins);
                     
                     for(let i=0; i<remSpins; i++){
-                        if (Math.random() < (1/299)) {
+                        if (Math.random() < (1/99)) {
                             let streak = 1;
                             let rushPayout = 4000;
                             while (Math.random() < 0.70) {
@@ -3177,7 +3097,7 @@ app.post('/webhook', (req, res) => {
                     let finalWin = totalPayout - stolen;
 
                     await addMoney(senderId, finalWin);
-                    await updatePlayerStats(senderId, 0, totalPayout, 'win', true); // 賭け金は既に引かれている
+                    await updatePlayerStats(senderId, 0, totalPayout, 'win', true, roomId); // 賭け金は既に引かれている
                     await processButler(senderId, totalPayout, roomId);
 
                     if (mId) {
@@ -3241,11 +3161,11 @@ app.post('/webhook', (req, res) => {
                     let finalWin = winAmt - stolen;
                     finalMsg += `🎉 絵柄が揃いました！ ${mult}倍の大当たり！ (+${formatNumber(finalWin)} コイン)${jokerMsg}`;
                     await addMoney(senderId, finalWin);
-                    await updatePlayerStats(senderId, amt, winAmt, 'win');
+                    await updatePlayerStats(senderId, amt, winAmt, 'win', false, roomId);
                     await processButler(senderId, winAmt, roomId);
                 } else {
                     finalMsg += `💀 ハズレ...`;
-                    await updatePlayerStats(senderId, amt, 0, 'lose');
+                    await updatePlayerStats(senderId, amt, 0, 'lose', false, roomId);
                     let bountyMsg = await processBounty(senderId, amt, roomId);
                     finalMsg += bountyMsg;
                 }
@@ -3253,6 +3173,25 @@ app.post('/webhook', (req, res) => {
                 if (mId) await editMessage(roomId, mId, finalMsg + "[/info]");
                 delete activeScratch[senderId];
                 return;
+            }
+
+            // --- 役職スキル発動コマンド ---
+            if (/(^|\n)[/#]tenbin\b/.test(body) && gambleActive) {
+                if (myJob !== 'てんびん') return sendTempMessage(roomId, `[info]⚠️ 役職【てんびん】専用のコマンドです。[/info]`);
+                if (player.skill_date === today) return sendTempMessage(roomId, `[info]⚠️ スキルは1日1回までです。[/info]`);
+                
+                player.job_state.balance_active = true;
+                await supabase.from('players').update({ skill_date: today, job_state: JSON.stringify(player.job_state) }).eq('account_id', senderId);
+                return sendTempMessage(roomId, `[info]⚖️ 【てんびん】の能力を発動しました！\n次に行う2択ゲーム(丁半,シックボー,ルーレット,ハイロー)で自分が選んだ方の勝率が変動します。[/info]`);
+            }
+
+            if (/(^|\n)[/#]sekigan\b/.test(body) && gambleActive) {
+                if (myJob !== '隻眼') return sendTempMessage(roomId, `[info]⚠️ 役職【隻眼】専用のコマンドです。[/info]`);
+                if (player.skill_date === today) return sendTempMessage(roomId, `[info]⚠️ スキルは1日1回までです。[/info]`);
+                
+                player.job_state.sekigan_active = true;
+                await supabase.from('players').update({ skill_date: today, job_state: JSON.stringify(player.job_state) }).eq('account_id', senderId);
+                return sendTempMessage(roomId, `[info]👁️ 【隻眼】の能力を発動しました！\n次に行うBJやヨットで、最初の手札やダイスの一部が見えなくなる代わりに、勝利時の配当が 3倍 になります。[/info]`);
             }
 
             // --- アイテム使用コマンド ---
@@ -3354,7 +3293,7 @@ app.post('/webhook', (req, res) => {
                     let msg = `[info][title]🕶️ 闇市[/title]
 ヒッヒッヒ...よくここが見つかったな。 /#buy [アイテム名] で買えるぞ。
 ・黄金の招き猫 (300万): 所持しているだけで預金利息がさらに+0.5%加算
-・身代わりの人形 (200万): 持っているとlife bet失敗時に自動消費し、1回だけ追放を回避し資産半分を守る
+・身代わりの人形 (200万): 持っていると敗北時に自動消費し、1回だけ追放を回避し資産半分を守る
 ・デス・リバース (30万): /#use で使うと50%成功。ロシアンルーレットで撃たれた際、死を反転させて相手を道連れにする[/info]`;
                     return sendTempMessage(roomId, msg);
                 } else {
@@ -3477,7 +3416,7 @@ app.post('/webhook', (req, res) => {
                 let isTrue = Math.random() < 0.7; // 70%の確率で正解
                 let futureMsg = "";
 
-                if (['bj', 'buta', 'poker', 'daifugo'].includes(g.type)) {
+                if (['bj', 'buta', 'daifugo'].includes(g.type)) {
                     if (g.state === 'ACTION' && g.deck && g.deck.length > 0) {
                         let card = g.deck[g.deck.length - 1];
                         if (!isTrue) {
@@ -3487,6 +3426,12 @@ app.post('/webhook', (req, res) => {
                             card = fc;
                         }
                         futureMsg = `次に出るカードは【 ${card.suit}${card.rank} 】のようです...`;
+                    } else {
+                        return sendTempMessage(roomId, `[info]⚠️ 今は未来を視るタイミングではありません。[/info]`);
+                    }
+                } else if (g.type === 'poker') {
+                    if (g.state === 'ACTION' && g.deck && g.deck.length > 0) {
+                        futureMsg = `相手(ディーラー)は強気に出るようです...`;
                     } else {
                         return sendTempMessage(roomId, `[info]⚠️ 今は未来を視るタイミングではありません。[/info]`);
                     }
@@ -3749,7 +3694,7 @@ app.post('/webhook', (req, res) => {
             if (helpMatch) {
                 let g = helpMatch[1].toLowerCase();
                 let txt = "";
-                if (g === 'poker') txt = `[title]🃏 ポーカーのルール[/title]ディーラーと1対1で役の強さを競います。\n配られた5枚のカードを1回だけ交換できます。\n【配当】ディーラーより強ければ 賭け金×2 (利益+100%)。引き分けは返金。\n【役の強さ】ロイヤル > ストフラ > 4カード > フルハウス > フラッシュ > ストレート > 3カード > 2ペア > 1ペア > ノーペア`;
+                if (g === 'poker') txt = `[title]🃏 テキサスホールデムのルール[/title]ディーラーと役の強さを競います。\n共通カード(フロップ)5枚と、自分の手札2枚を組み合わせた7枚のうち最強の5枚で役を作ります。\n【配当】ディーラーより強ければ 賭け金×2。引き分けは返金。\n【役の強さ】ロイヤル > ストフラ > 4カード > フルハウス > フラッシュ > ストレート > 3カード > 2ペア > 1ペア > ノーペア`;
                 else if (g === 'yacht') txt = `[title]🎲 ヨットのルール[/title]ディーラーと5つのサイコロの役の強さを競います。\nサイコロは最大2回まで(計3投)振り直せます。\n【配当】ディーラーより強ければ 賭け金×2。引き分けは返金。\n【注意】「役なし」は無条件で没収。`;
                 else if (g === 'bj') txt = `[title]🃏 ブラックジャックのルール[/title]カードの合計を「21」に近づけるゲーム。\n21を超えるとバースト(即負け)。\n【配当】勝てば 2倍。最初から21(BJ)なら 2.5倍！`;
                 else if (g === 'cc') txt = `[title]🎲 チンチロリンのルール[/title]サイコロを3つ振り、親(ディーラー)と出目を競います。\n同じ目が2つ出た時、残りの1つが「出目」になります。\n【配当】役の倍率に応じて賭け金が増減。`;
@@ -3793,6 +3738,8 @@ app.post('/webhook', (req, res) => {
 /#owner : [ギャンブルオーナー] 30分間、他人の負け金を回収 (1日1回)
 /#next-future : [未来人] ゲーム結果を予知 (1日1回)
 /#bounty [aid] : [賞金稼ぎ] ターゲットが次に負けた際、負け金の10%を奪う (1日1回)
+/#tenbin : [てんびん] 次の2択ゲームで勝率を変動させる(1日1回)
+/#sekigan : [隻眼] 次のBJ・ヨットで最初の手札・ダイスが見えなくなる代わりに配当3倍(1日1回)
 ※ [賭博師]、[パチプロ]、[逆転のギャンブラー]、[銀行員]、[大富豪の執事]、[数学者] は自動スキルです。
 /#omikuji : 1日1回おみくじ (スロット確率変動)
 
@@ -3811,7 +3758,6 @@ app.post('/webhook', (req, res) => {
 【 🎲 テーブルゲーム 】 (詳しいルールは /#help [ゲーム名])
 ※ コマンドは全て / (スラッシュ) でも動作します。 (例: /slot 100)
 ※ 1回のゲームの最大ベット額は 999万 までです。最低賭け金は500です。
-※ /#bet life : 命を賭ける (8連勝した者のみ使用可能。成功で所持金+銀行が8~15倍。失敗で永久出禁)
 ※ 全てのゲームは1人から開始可能です。
 /#highlow : ハイロー募集 (/#bet [額] [high/low])
 /#crash : クラッシュ募集 (/#bet [額] [目標倍率(1.01~)])
@@ -3821,7 +3767,7 @@ app.post('/webhook', (req, res) => {
 /#rolet : ルーレット募集 (/#bet [額] [red/even/数字など])
 /#derby : ダービー募集 (/#bet [額] [馬番-馬番])
 /#bj : ブラックジャック募集 (/#hit か /#stand)
-/#poker : ポーカー募集 (/#change [番号] か /#stand)
+/#poker : テキサスホールデム募集 (/#call か /#fold)
 /#yacht : ヨット募集 (/#change [番号] か /#stand)
 /#buta : 豚のしっぽ募集 (/#draw か /#stand)
 /#daifugo : 大富豪募集 (個別部屋連動システム！)
@@ -4042,13 +3988,14 @@ app.post('/webhook', (req, res) => {
                 return sendTempMessage(roomId, `[info][title]📊 プレイヤー情報[/title][piconname:${targetAid}] 様 (最終ログイン: ${lastLoginStr})\n\n💰 所持金: ${formatNumber(tMoney)} コイン${bStr}${kabuStr}\n💎 純資産: ${formatNumber(netWorth)} コイン${streakStr}${pStreakStr}${statsStr}${drtpStr}\n[hr]👔 職業: ${tJob}\n🎰 スロット残り: ${remSlot} 回\n💼 お仕事残り: ${targetPlayer.work_limit || 0} 回\n⛩️ 今日の運勢: ${targetPlayer.omikuji_result || '未引'}${targetMsg}${itemStr}\n[hr]※1分後に自動消去されます[/info]`);
             }
 
-            const cJobMatch = body.match(/(^|\n)[/#]job\s+(サラリーマン|公務員|警察官|プロスポーツ選手|賭博師|ギャンブルオーナー|未来人|逆転のギャンブラー|銀行員|大富豪の執事|賞金稼ぎ|数学者|パチプロ)/);
+            const cJobMatch = body.match(/(^|\n)[/#]job\s+(サラリーマン|公務員|警察官|プロスポーツ選手|賭博師|ギャンブルオーナー|未来人|逆転のギャンブラー|銀行員|大富豪の執事|賞金稼ぎ|数学者|パチプロ|てんびん|隻眼)/);
             if (cJobMatch && gambleActive) {
                 const jn = cJobMatch[2]; const cs = {
                     'サラリーマン': 0, '公務員': 2000, '警察官': 3000, 'プロスポーツ選手': 5000, 
                     '賭博師': 200000, 'ギャンブルオーナー': 1000000, '未来人': 5000000,
                     '逆転のギャンブラー': 1000000, '銀行員': 1000000, '大富豪の執事': 400000,
-                    '賞金稼ぎ': 10000, '数学者': 50000, 'パチプロ': 50000
+                    '賞金稼ぎ': 10000, '数学者': 50000, 'パチプロ': 50000,
+                    'てんびん': 500000, '隻眼': 400000
                 };
                 if (myJob === jn) return sendTempMessage(roomId, `[info]⚠️ ${makeReplyTag(senderId, roomId, msgId)}\nすでに ${jn} に就いています！[/info]`);
                 if (myMoney < cs[jn]) return sendTempMessage(roomId, `[info]⚠️ ${makeReplyTag(senderId, roomId, msgId)}\nお金が足りません！(転職費用: ${formatNumber(cs[jn])} コイン)[/info]`);
@@ -4069,6 +4016,8 @@ app.post('/webhook', (req, res) => {
 🎯 賞金稼ぎ (費用: 10,000)\n ▶ /#bounty [aid] でターゲット指定。その人が次に負けた時、負け金の10%を報酬として奪う(1日1回)
 🧮 数学者 (費用: 50,000)\n ▶ ルーレットの赤黒・偶数奇数等の2倍配当が「2.2倍」になる
 🎰 パチプロ (費用: 50,000)\n ▶ パチンコ遊技時の釘の入賞率が 5% から 7% に上がる
+⚖️ てんびん (費用: 500,000)\n ▶ /#tenbin 2択ゲームの勝率を10〜30%上昇させる(1日1回)
+👁️ 隻眼 (費用: 400,000)\n ▶ /#sekigan BJやヨットで情報が隠れる代わりに勝利配当が3倍になる(1日1回)
 [hr]※転職コマンド: /#job 役職名[/info]`);
             }
 
@@ -4104,10 +4053,12 @@ app.post('/webhook', (req, res) => {
                 else if(myJob === '賞金稼ぎ'){ e=Math.floor(Math.random()*2001)+500; m=`小悪党を捕まえ、 ${formatNumber(e)} コイン稼ぎました！🎯`; }
                 else if(myJob === '数学者'){ e=Math.floor(Math.random()*2001)+1500; m=`新たな公式を証明し、 ${formatNumber(e)} コイン稼ぎました！🧮`; }
                 else if(myJob === 'パチプロ'){ e=Math.floor(Math.random()*1501)+500; m=`優良台のデータを取り、 ${formatNumber(e)} コイン稼ぎました！🎰`; }
+                else if(myJob === 'てんびん'){ e=Math.floor(Math.random()*2001)+1000; m=`天秤で重さを量り、 ${formatNumber(e)} コイン稼ぎました！⚖️`; }
+                else if(myJob === '隻眼'){ e=Math.floor(Math.random()*2001)+1000; m=`片目で見抜き、 ${formatNumber(e)} コイン稼ぎました！👁️`; }
                 
                 await supabase.from('players').update({ last_work_time: Date.now(), work_limit: player.work_limit - 1 }).eq('account_id', senderId);
                 await addMoney(senderId, e); 
-                await updateQuest(senderId, 'work_count', 1);
+                await updateQuest(senderId, 'work_count', 1, roomId);
                 return sendTempMessage(roomId, `[info][title]💼 お仕事完了[/title][piconname:${senderId}]\n${m}\n(残り ${player.work_limit - 1} 回)[/info]`);
             }
 
@@ -4122,11 +4073,9 @@ app.post('/webhook', (req, res) => {
                 
                 if (bet > 0 && myMoney >= bet) {
                     let updates = { money: myMoney - bet, slot_count: player.slot_count + 1, last_slot_time: Date.now() };
-                    if (player.life_bet_unlocked) updates.life_bet_unlocked = false;
                     await supabase.from('players').update(updates).eq('account_id', senderId);
-                    if (player.life_bet_unlocked) sendTempMessage(roomId, `[info]※通常のベットを行ったため、命賭けの権利は消滅しました。[/info]`);
                     
-                    await updateQuest(senderId, 'slot_count', 1);
+                    await updateQuest(senderId, 'slot_count', 1, roomId);
 
                     let r = Math.random() * 100, omi = (player.omikuji_date === today) ? player.omikuji_result : null, oM = "";
                     if(omi === '大吉') { r = Math.max(0, r - 0.4); oM = "(⛩️大吉ボーナス!)"; } 
@@ -4144,7 +4093,7 @@ app.post('/webhook', (req, res) => {
                     else { ml=0; let o=["🍉","🍋","🔔","🍇","7️⃣","6️⃣","5️⃣"]; let r1=o[Math.floor(Math.random()*o.length)], r2=o[Math.floor(Math.random()*o.length)], r3=o[Math.floor(Math.random()*o.length)]; while(r1===r2&&r2===r3) r3=o[Math.floor(Math.random()*o.length)]; sy=`${r1} | ${r2} | ${r3}`; res="💀 はずれ..."; }
                     
                     if (ml > 0) {
-                        let buffRes = await processBuffs(senderId, true, false, false, ml, res);
+                        let buffRes = await processBuffs(senderId, true, false, false, ml, res, 'slot');
                         ml = buffRes.mult;
                         res = buffRes.resTxt;
                     }
@@ -4155,19 +4104,19 @@ app.post('/webhook', (req, res) => {
                         wA -= stolen;
                         res += jokerMsg;
                         await addMoney(senderId, wA);
-                        await updatePlayerStats(senderId, bet, wA, 'win');
+                        await updatePlayerStats(senderId, bet, wA, 'win', false, roomId);
                         kabuData.pendingProfit = (kabuData.pendingProfit || 0) - (wA - bet);
                         await processButler(senderId, wA, roomId);
                     } else {
                         let refunded = await processGamblerSkill(senderId, bet, roomId);
                         if (refunded) {
                             res += `\n(🔄 逆転スキルで返金!)`;
-                            await updatePlayerStats(senderId, bet, bet, 'draw');
+                            await updatePlayerStats(senderId, bet, bet, 'draw', false, roomId);
                         } else {
                             await processOwnerSkill(senderId, bet, roomId);
                             let bountyMsg = await processBounty(senderId, bet, roomId);
                             res += bountyMsg;
-                            await updatePlayerStats(senderId, bet, 0, 'lose');
+                            await updatePlayerStats(senderId, bet, 0, 'lose', false, roomId);
                             kabuData.pendingProfit = (kabuData.pendingProfit || 0) + bet;
                         }
                     }
@@ -4222,7 +4171,7 @@ app.post('/webhook', (req, res) => {
                 let tN = t==='derby' ? "🐎 みんなでダービー" : 
                          t==='cc' ? "🎲 チンチロリン" : 
                          t==='bj' ? "🃏 ブラックジャック" : 
-                         t==='poker' ? "🃏 ポーカー" : 
+                         t==='poker' ? "🃏 テキサスホールデム" : 
                          t==='yacht' ? "🎲 ヨット" : 
                          t==='sicbo' ? "🎲 シックボー(大小)" : 
                          t==='rolet' ? "🎡 ルーレット" : 
@@ -4273,17 +4222,12 @@ app.post('/webhook', (req, res) => {
                     
                     let pMsg = "";
                     if (gameState[roomId].state === 'ACTION' || gameState[roomId].state === 'BETTING') {
-                        if (p.isLifeBet) {
-                            await supabase.from('blacklist').insert({ account_id: p.aid });
-                            await updateRoomMembers(roomId, [p.aid], 'readonly');
-                            pMsg = " (命賭けキャンセルペナルティ: 永久追放)";
-                            await updatePlayerStats(p.aid, p.bet, 0, 'lose');
-                            kabuData.pendingProfit = (kabuData.pendingProfit || 0) + p.bet;
-                        } else if (p.bet > 0) {
-                            await supabase.from('players').update({ win_streak: 0, life_bet_unlocked: false }).eq('account_id', senderId);
+                        if (p.bet > 0) {
                             pMsg = " (賭け金没収: 敗北扱い)";
-                            await updatePlayerStats(p.aid, p.bet, 0, 'lose');
+                            await updatePlayerStats(p.aid, p.bet, 0, 'lose', true, roomId);
                             kabuData.pendingProfit = (kabuData.pendingProfit || 0) + p.bet;
+                        } else {
+                            pMsg = " (退出)";
                         }
                     } else {
                         pMsg = " (退出)";
@@ -4307,7 +4251,7 @@ app.post('/webhook', (req, res) => {
                     if (s.bet > 0) {
                         pMsg = " (賭け金没収)";
                         await processOwnerSkill(s.aid, s.bet, roomId);
-                        await updatePlayerStats(s.aid, s.bet, 0, 'lose');
+                        await updatePlayerStats(s.aid, s.bet, 0, 'lose', false, roomId);
                         kabuData.pendingProfit = (kabuData.pendingProfit || 0) + s.bet;
                     } else {
                         pMsg = " (退出)";
@@ -4318,84 +4262,63 @@ app.post('/webhook', (req, res) => {
                 return;
             }
 
-            const bM = body.match(/(^|\n)[/#]bet\s+(max|half|life|[0-9]+)(?:\s+([a-zA-Z0-9-.]+))?/);
+            const bM = body.match(/(^|\n)[/#]bet\s+(max|half|[0-9]+)(?:\s+([a-zA-Z0-9-.]+))?/);
             if (bM && gambleActive && gameState[roomId]?.state === 'BETTING') {
                 let g = gameState[roomId];
                 
                 let pl = g.players.find(x => x.aid === senderId);
                 let sp = g.spectators ? g.spectators.find(x => x.aid === senderId) : null;
 
-                if (pl && pl.bet === 0 && !pl.pendingLifeBet) {
+                if (pl && pl.bet === 0) {
                     let betType = bM[2];
 
-                    if (betType === 'life') {
-                        if (g.type === 'russian') return sendTempMessage(roomId, `[info]⚠️ ロシアンルーレットでは /#bet life は使用できません。[/info]`);
-                        if (!player.life_bet_unlocked) return sendTempMessage(roomId, `[info]⚠️ /#bet life は8連勝した者のみが使える特権です。[/info]`);
-                        
-                        if (g.type === 'derby') {
-                            let h = bM[3]; if (!h || !g.oddsMap[h]) return sendTempMessage(roomId, `[info]⚠️ 馬連を正しく指定してください\n例: /#bet life 1-2[/info]`); pl.pendingChoice = h;
-                        } else if (g.type === 'sicbo') {
-                            let h = bM[3]; if (!h || !['dai','shou','any'].includes(h)) return sendTempMessage(roomId, `[info]⚠️ 予想(dai/shou/any)を正しく指定してください\n例: /#bet life dai[/info]`); pl.pendingChoice = h;
-                        } else if (g.type === 'rolet') {
-                            let h = bM[3]; if (!h || (!['red','black','even','odd','high','low'].includes(h) && (isNaN(parseInt(h)) || parseInt(h) < 0 || parseInt(h) > 36))) return sendTempMessage(roomId, `[info]⚠️ 予想を正しく指定してください\n例: /#bet life red[/info]`); pl.pendingChoice = h;
-                        } else if (g.type === 'crash') {
-                            let h = bM[3]; let tm = parseFloat(h); if (!h || isNaN(tm) || tm <= 1.00) return sendTempMessage(roomId, `[info]⚠️ 目標倍率(1.01以上)を正しく指定してください\n例: /#bet life 2.5[/info]`); pl.pendingChoice = tm.toFixed(2);
-                        } else if (g.type === 'highlow') {
-                            let h = bM[3]; if (!h || !['high','low'].includes(h.toLowerCase())) return sendTempMessage(roomId, `[info]⚠️ 予想(high/low)を指定してください\n例: /#bet life high[/info]`); pl.pendingChoice = h.toLowerCase();
-                        }
-                        pl.pendingLifeBet = true;
-                        return sendTempMessage(roomId, `[info]⚠️ 【命賭けの確認】\nこれに失敗すると永久に出禁になりますが、成功すると持ち金(銀行含む)が8〜15倍になります。\n本当によろしいですか？\nよろしければ yes 、やめる場合は no と発言してください。[/info]`);
-                    } else {
-                        let b = betType === 'max' ? Math.min(myMoney, 9990000) : (betType === 'half' ? Math.floor(myMoney/2) : parseInt(betType, 10));
-                        if (b > 9990000) return sendTempMessage(roomId, `[info]⚠️ 1回の最大ベット額は 9,990,000 コインまでです。[/info]`);
-                        if (b < 500) return sendTempMessage(roomId, `[info]⚠️ 最低賭け金は 500 コインです。[/info]`);
+                    let b = betType === 'max' ? Math.min(myMoney, 9990000) : (betType === 'half' ? Math.floor(myMoney/2) : parseInt(betType, 10));
+                    if (b > 9990000) return sendTempMessage(roomId, `[info]⚠️ 1回の最大ベット額は 9,990,000 コインまでです。[/info]`);
+                    if (b < 500) return sendTempMessage(roomId, `[info]⚠️ 最低賭け金は 500 コインです。[/info]`);
 
-                        if (b > 0 && myMoney >= b) {
-                            if (g.type === 'russian') {
-                                if (!g.minBet) {
-                                    let opponent = g.players.find(p => p.aid !== senderId);
-                                    let { data: oppData } = await supabase.from('players').select('money, bank').eq('account_id', opponent.aid).single();
-                                    let oppTotal = (oppData?.money || 0) + (oppData?.bank || 0);
-                                    let maxAllowed = Math.floor(oppTotal / 2);
-                                    
-                                    if (b >= maxAllowed) return sendTempMessage(roomId, `[info]⚠️ 相手の全財産の半分(${formatNumber(maxAllowed)})未満の金額を設定してください。[/info]`);
-                                    
-                                    g.minBet = b;
-                                    pl.bet = b;
-                                    await addMoney(senderId, -b);
-                                    sendTempMessage(roomId, `[info]💰 [piconname:${senderId}] が 最低賭け金 ${formatNumber(b)} コイン に設定しました！\n相手は /#bet ${b} 以上の金額をベットしてください。[/info]`);
-                                } else {
-                                    if (b < g.minBet) return sendTempMessage(roomId, `[info]⚠️ 最低賭け金(${formatNumber(g.minBet)} コイン)以上をベットしてください。[/info]`);
-                                    pl.bet = b;
-                                    await addMoney(senderId, -b);
-                                    sendTempMessage(roomId, `[info]💰 [piconname:${senderId}] が ${formatNumber(b)} コイン をベットしました！[/info]`);
-                                }
-                                checkGameProgress(roomId);
-                                return;
+                    if (b > 0 && myMoney >= b) {
+                        if (g.type === 'russian') {
+                            if (!g.minBet) {
+                                let opponent = g.players.find(p => p.aid !== senderId);
+                                let { data: oppData } = await supabase.from('players').select('money, bank').eq('account_id', opponent.aid).single();
+                                let oppTotal = (oppData?.money || 0) + (oppData?.bank || 0);
+                                let maxAllowed = Math.floor(oppTotal / 2);
+                                
+                                if (b >= maxAllowed) return sendTempMessage(roomId, `[info]⚠️ 相手の全財産の半分(${formatNumber(maxAllowed)})未満の金額を設定してください。[/info]`);
+                                
+                                g.minBet = b;
+                                pl.bet = b;
+                                await addMoney(senderId, -b);
+                                sendTempMessage(roomId, `[info]💰 [piconname:${senderId}] が 最低賭け金 ${formatNumber(b)} コイン に設定しました！\n相手は /#bet ${b} 以上の金額をベットしてください。[/info]`);
+                            } else {
+                                if (b < g.minBet) return sendTempMessage(roomId, `[info]⚠️ 最低賭け金(${formatNumber(g.minBet)} コイン)以上をベットしてください。[/info]`);
+                                pl.bet = b;
+                                await addMoney(senderId, -b);
+                                sendTempMessage(roomId, `[info]💰 [piconname:${senderId}] が ${formatNumber(b)} コイン をベットしました！[/info]`);
                             }
-
-                            if (g.type === 'derby') {
-                                let h = bM[3]; if (!h || !g.oddsMap[h]) return sendTempMessage(roomId, `[info]⚠️ 馬連を正しく指定してください\n例: /#bet 100 1-2[/info]`); pl.choice = h;
-                            } else if (g.type === 'sicbo') {
-                                let h = bM[3]; if (!h || !['dai','shou','any'].includes(h)) return sendTempMessage(roomId, `[info]⚠️ 予想(dai/shou/any)を正しく指定してください\n例: /#bet 100 dai[/info]`); pl.choice = h;
-                            } else if (g.type === 'rolet') {
-                                let h = bM[3]; if (!h || (!['red','black','even','odd','high','low'].includes(h) && (isNaN(parseInt(h)) || parseInt(h) < 0 || parseInt(h) > 36))) return sendTempMessage(roomId, `[info]⚠️ 予想を正しく指定してください\n例: /#bet 100 red[/info]`); pl.choice = h;
-                            } else if (g.type === 'crash') {
-                                let h = bM[3]; let tm = parseFloat(h); if (!h || isNaN(tm) || tm <= 1.00) return sendTempMessage(roomId, `[info]⚠️ 目標倍率(1.01以上)を指定してください\n例: /#bet 100 2.5[/info]`); pl.choice = tm.toFixed(2);
-                            } else if (g.type === 'highlow') {
-                                let h = bM[3]; if (!h || !['high','low'].includes(h.toLowerCase())) return sendTempMessage(roomId, `[info]⚠️ 予想(high/low)を指定してください\n例: /#bet 100 high[/info]`); pl.choice = h.toLowerCase();
-                            }
-                            pl.bet = b; 
-                            let updates = { money: myMoney - b };
-                            if (player.life_bet_unlocked) { updates.life_bet_unlocked = false; sendTempMessage(roomId, `[info]※通常のベットを行ったため、命賭けの権利は消滅しました。[/info]`); }
-                            await supabase.from('players').update(updates).eq('account_id', senderId);
-                            sendTempMessage(roomId, `[info]💰 [piconname:${senderId}] ${formatNumber(b)} コインをベットしました！[/info]`);
                             checkGameProgress(roomId);
-                        } else return sendTempMessage(roomId, `[info]⚠️ ${makeReplyTag(senderId, roomId, msgId)} お金が足りません！[/info]`);
-                    }
+                            return;
+                        }
+
+                        if (g.type === 'derby') {
+                            let h = bM[3]; if (!h || !g.oddsMap[h]) return sendTempMessage(roomId, `[info]⚠️ 馬連を正しく指定してください\n例: /#bet 100 1-2[/info]`); pl.choice = h;
+                        } else if (g.type === 'sicbo') {
+                            let h = bM[3]; if (!h || !['dai','shou','any'].includes(h)) return sendTempMessage(roomId, `[info]⚠️ 予想(dai/shou/any)を正しく指定してください\n例: /#bet 100 dai[/info]`); pl.choice = h;
+                        } else if (g.type === 'rolet') {
+                            let h = bM[3]; if (!h || (!['red','black','even','odd','high','low'].includes(h) && (isNaN(parseInt(h)) || parseInt(h) < 0 || parseInt(h) > 36))) return sendTempMessage(roomId, `[info]⚠️ 予想を正しく指定してください\n例: /#bet 100 red[/info]`); pl.choice = h;
+                        } else if (g.type === 'crash') {
+                            let h = bM[3]; let tm = parseFloat(h); if (!h || isNaN(tm) || tm <= 1.00) return sendTempMessage(roomId, `[info]⚠️ 目標倍率(1.01以上)を指定してください\n例: /#bet 100 2.5[/info]`); pl.choice = tm.toFixed(2);
+                        } else if (g.type === 'highlow') {
+                            let h = bM[3]; if (!h || !['high','low'].includes(h.toLowerCase())) return sendTempMessage(roomId, `[info]⚠️ 予想(high/low)を指定してください\n例: /#bet 100 high[/info]`); pl.choice = h.toLowerCase();
+                        }
+                        pl.bet = b; 
+                        let updates = { money: myMoney - b };
+                        await supabase.from('players').update(updates).eq('account_id', senderId);
+                        sendTempMessage(roomId, `[info]💰 [piconname:${senderId}] ${formatNumber(b)} コインをベットしました！[/info]`);
+                        checkGameProgress(roomId);
+                    } else return sendTempMessage(roomId, `[info]⚠️ ${makeReplyTag(senderId, roomId, msgId)} お金が足りません！[/info]`);
                 } else if (sp && sp.bet === 0) {
                     let betType = bM[2];
-                    if (betType === 'life') return sendTempMessage(roomId, `[info]⚠️ 観戦者は命を賭けられません。[/info]`);
                     
                     let targetAid = repliedAid || bM[3];
                     if (!targetAid || !g.players.find(p => p.aid === targetAid)) {
@@ -4417,26 +4340,6 @@ app.post('/webhook', (req, res) => {
                     }
                 }
                 return;
-            }
-
-            if ((body.trim().toLowerCase() === 'yes' || body.trim().toLowerCase() === 'no') && gambleActive && gameState[roomId]?.state === 'BETTING') {
-                let pl = gameState[roomId].players.find(x => x.aid === senderId);
-                if (pl && pl.pendingLifeBet) {
-                    if (body.trim().toLowerCase() === 'yes') {
-                        pl.isLifeBet = true;
-                        if (pl.pendingChoice) pl.choice = pl.pendingChoice;
-                        pl.lifeBetBaseAmount = myMoney + myBank;
-                        pl.bet = pl.lifeBetBaseAmount > 0 ? pl.lifeBetBaseAmount : 1; 
-                        await supabase.from('players').update({ money: 0, bank: 0, life_bet_unlocked: false }).eq('account_id', senderId);
-                        pl.pendingLifeBet = false;
-                        sendTempMessage(roomId, `[info]💀 [piconname:${senderId}] が命を賭けました！[/info]`);
-                        checkGameProgress(roomId);
-                    } else {
-                        pl.pendingLifeBet = false;
-                        sendTempMessage(roomId, `[info]💨 [piconname:${senderId}] が命賭けをキャンセルしました。[/info]`);
-                    }
-                    return;
-                }
             }
 
             const rsMatch = body.trim().match(/^[/#](shoot)$/);
@@ -4475,13 +4378,13 @@ app.post('/webhook', (req, res) => {
                         if (isReversed) {
                             await addMoney(winner.aid, winner.bet);
                             await addMoney(loser.aid, loser.bet);
-                            await updatePlayerStats(winner.aid, winner.bet, winner.bet, 'draw', true);
-                            await updatePlayerStats(loser.aid, loser.bet, loser.bet, 'draw', true);
+                            await updatePlayerStats(winner.aid, winner.bet, winner.bet, 'draw', true, roomId);
+                            await updatePlayerStats(loser.aid, loser.bet, loser.bet, 'draw', true, roomId);
                             await sendMessage(roomId, `[info][title]💀 相打ち[/title]両者引き分けとなり、賭け金は返還されました。[/info]`);
                         } else {
                             await addMoney(winner.aid, totalPot);
-                            await updatePlayerStats(winner.aid, winner.bet, totalPot, 'win', true);
-                            await updatePlayerStats(loser.aid, loser.bet, 0, 'lose', true);
+                            await updatePlayerStats(winner.aid, winner.bet, totalPot, 'win', true, roomId);
+                            await updatePlayerStats(loser.aid, loser.bet, 0, 'lose', true, roomId);
                             await updateWinStreak(winner.aid, 'win', roomId);
                             await updateWinStreak(loser.aid, 'lose', roomId);
                             
@@ -4494,10 +4397,10 @@ app.post('/webhook', (req, res) => {
                                     if (spec.targetAid === winner.aid) {
                                         let winAmt = spec.bet * 2;
                                         await addMoney(spec.aid, winAmt);
-                                        await updatePlayerStats(spec.aid, spec.bet, winAmt, 'win');
+                                        await updatePlayerStats(spec.aid, spec.bet, winAmt, 'win', false, roomId);
                                         specMsg += `[piconname:${spec.aid}]: 予想的中！ (+${formatNumber(winAmt)})\n`;
                                     } else {
-                                        await updatePlayerStats(spec.aid, spec.bet, 0, 'lose');
+                                        await updatePlayerStats(spec.aid, spec.bet, 0, 'lose', false, roomId);
                                         specMsg += `[piconname:${spec.aid}]: 予想はずれ (没収)\n`;
                                     }
                                 }
@@ -4576,51 +4479,61 @@ app.post('/webhook', (req, res) => {
                 }
             }
 
-            if (body.match(/(^|\n)[/#]change\b/) && gambleActive && (gameState[roomId]?.type === 'poker' || gameState[roomId]?.type === 'yacht') && gameState[roomId].state === 'ACTION') {
+            if (/(^|\n)[/#]call\b/.test(body) && gambleActive && gameState[roomId]?.type === 'poker' && gameState[roomId].state === 'ACTION') {
+                let g = gameState[roomId];
+                let pl = g.players[g.turnIndex];
+                if (pl && pl.aid === senderId && pl.status === 'playing') {
+                    pl.status = 'stand';
+                    await sendTempMessage(roomId, `[info][piconname:${pl.aid}] はコールしました。[/info]`);
+                    g.turnIndex++; 
+                    await proceedNextPokerTurn(roomId);
+                }
+            }
+            if (/(^|\n)[/#]fold\b/.test(body) && gambleActive && gameState[roomId]?.type === 'poker' && gameState[roomId].state === 'ACTION') {
+                let g = gameState[roomId];
+                let pl = g.players[g.turnIndex];
+                if (pl && pl.aid === senderId && pl.status === 'playing') {
+                    pl.status = 'fold';
+                    await sendTempMessage(roomId, `[info][piconname:${pl.aid}] はフォールドしました。[/info]`);
+                    g.turnIndex++; 
+                    await proceedNextPokerTurn(roomId);
+                }
+            }
+
+            if (body.match(/(^|\n)[/#]change\b/) && gambleActive && gameState[roomId]?.type === 'yacht' && gameState[roomId].state === 'ACTION') {
                 let g = gameState[roomId];
                 let pl = g.players[g.turnIndex];
                 if (pl && pl.aid === senderId && pl.status === 'playing') {
                     let match = body.match(/^[/#]change\s+([0-9\s]+)$/);
                     if (match) {
                         let nums = match[1].trim().split(/\s+/).map(n => parseInt(n)).filter(n => !isNaN(n) && n >= 1 && n <= 5);
-                        
-                        if (g.type === 'poker') {
-                            for (let n of nums) pl.hand[n-1] = g.deck.pop();
-                            pl.status = 'stand';
-                            let handStr = pl.hand.map(c => c.suit + c.rank).join(' ');
-                            let ev = getPokerRank(pl.hand);
-                            await sendTempMessage(roomId, `[info][piconname:${pl.aid}] 交換完了\n確定手札: ${handStr} (${ev.name})[/info]`);
-                            g.turnIndex++; 
-                            await proceedNextPokerTurn(roomId);
-                        } else if (g.type === 'yacht') {
-                            let cMsgRes = await chatworkClient.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(`[info]🎲 [piconname:${pl.aid}] サイコロを振り直しています...[/info]`)}`);
-                            if (cMsgRes && cMsgRes.data) {
-                                let cmId = cMsgRes.data.message_id;
-                                for(let i=0; i<8; i++) {
-                                    await sleep(300);
-                                    let tempD = [...pl.dice];
-                                    let animStr = tempD.map((d, idx) => {
-                                        if (nums.includes(idx + 1)) return `[ 🎲${Math.floor(Math.random() * 6) + 1} ]`;
-                                        return ` 🎲${d} `; 
-                                    }).join('  ');
-                                    await editMessage(roomId, cmId, `[info]🎲 [piconname:${pl.aid}] サイコロを振り直しています...\n${animStr}[/info]`);
-                                }
+                        let cMsgRes = await chatworkClient.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(`[info]🎲 [piconname:${pl.aid}] サイコロを振り直しています...[/info]`)}`);
+                        if (cMsgRes && cMsgRes.data) {
+                            let cmId = cMsgRes.data.message_id;
+                            for(let i=0; i<8; i++) {
+                                await sleep(300);
+                                let tempD = [...pl.dice];
+                                let animStr = tempD.map((d, idx) => {
+                                    if (nums.includes(idx + 1)) return `[ 🎲${Math.floor(Math.random() * 6) + 1} ]`;
+                                    return ` 🎲${d} `; 
+                                }).join('  ');
+                                await editMessage(roomId, cmId, `[info]🎲 [piconname:${pl.aid}] サイコロを振り直しています...\n${animStr}[/info]`);
+                            }
 
-                                nums.forEach(idx => pl.dice[idx-1] = Math.floor(Math.random() * 6) + 1);
-                                pl.rolls++;
-                                
-                                let ev = getYachtRank(pl.dice);
-                                if (pl.rolls >= 3) {
-                                    pl.status = 'stand';
-                                    let finalDiceStr = pl.dice.map(d => `🎲${d}`).join(' ');
-                                    await editMessage(roomId, cmId, `[info][piconname:${pl.aid}] 3回目の振り直し完了！\n確定サイコロ: ${finalDiceStr} (${ev.name})[/info]`);
-                                    g.turnIndex++;
-                                    await proceedNextYachtTurn(roomId);
-                                } else {
-                                    let currentDiceStr = pl.dice.map((d, i) => `[${i + 1}] 🎲${d}`).join('   ');
-                                    await editMessage(roomId, cmId, `[info][title]🎲 ヨット ターン継続 ( ${pl.rolls}/3 回目 )[/title][piconname:${pl.aid}]\nサイコロ: ${currentDiceStr}\n役: ${ev.name}\n\n/#change [番号] または /#stand[/info]`);
-                                    startGameTimer(roomId, 60000);
-                                }
+                            nums.forEach(idx => pl.dice[idx-1] = Math.floor(Math.random() * 6) + 1);
+                            pl.rolls++;
+                            
+                            let ev = getYachtRank(pl.dice);
+                            if (pl.rolls >= 3) {
+                                pl.status = 'stand';
+                                let finalDiceStr = pl.dice.map(d => `🎲${d}`).join(' ');
+                                await editMessage(roomId, cmId, `[info][piconname:${pl.aid}] 3回目の振り直し完了！\n確定サイコロ: ${finalDiceStr} (${ev.name})[/info]`);
+                                g.turnIndex++;
+                                await proceedNextYachtTurn(roomId);
+                            } else {
+                                let currentDiceStr = pl.dice.map((d, i) => `[${i + 1}] 🎲${d}`).join('   ');
+                                await editMessage(roomId, cmId, `[info][title]🎲 ヨット ターン継続 ( ${pl.rolls}/3 回目 )[/title][piconname:${pl.aid}]\nサイコロ: ${currentDiceStr}\n役: ${ev.name}\n\n/#change [番号] または /#stand[/info]`);
+                                startGameTimer(roomId, 60000);
                             }
                         }
                     } else {
@@ -4631,7 +4544,7 @@ app.post('/webhook', (req, res) => {
             }
             
             const isHitOrStand = /(^|\n)[/#]hit\b/.test(body) || /(^|\n)[/#]stand\b/.test(body);
-            if (isHitOrStand && gambleActive && (gameState[roomId]?.type === 'bj' || gameState[roomId]?.type === 'poker' || gameState[roomId]?.type === 'yacht') && gameState[roomId].state === 'ACTION') {
+            if (isHitOrStand && gambleActive && (gameState[roomId]?.type === 'bj' || gameState[roomId]?.type === 'yacht') && gameState[roomId].state === 'ACTION') {
                 let g = gameState[roomId];
                 let pl = g.players[g.turnIndex];
                 
@@ -4643,35 +4556,43 @@ app.post('/webhook', (req, res) => {
                         pl.hand.push(c);
                         
                         let score = calculateBJScore(pl.hand);
-                        let hStr = pl.hand.map(cd => cd.suit + cd.rank).join(' ');
                         
+                        let hStr = "";
+                        let scoreStr = "";
+                        if (pl.isSekigan && pl.hand.length === 2) {
+                            hStr = `${pl.hand[0].suit}${pl.hand[0].rank} ❓`;
+                            scoreStr = "?";
+                        } else {
+                            hStr = pl.hand.map(cd => cd.suit + cd.rank).join(' ');
+                            scoreStr = score;
+                        }
+
                         if (score > 21) {
                             pl.status = 'bust';
-                            await sendTempMessage(roomId, `[info][piconname:${pl.aid}] ➡ 引いたカード: ${c.suit}${c.rank}\n手札: ${hStr} (スコア: ${score})\n💥 バーストしました！[/info]`);
+                            await sendTempMessage(roomId, `[info][piconname:${pl.aid}] ➡ 引いたカード: ${c.suit}${c.rank}\n手札: ${hStr} (スコア: ${scoreStr})\n💥 バーストしました！[/info]`);
                             g.turnIndex++; await proceedNextBJTurn(roomId);
                         } else if (score === 21) {
                             pl.status = 'stand';
-                            await sendTempMessage(roomId, `[info][piconname:${pl.aid}] ➡ 引いたカード: ${c.suit}${c.rank}\n手札: ${hStr} (スコア: ${score})\n✨ 21到達！自動スタンドします。[/info]`);
+                            await sendTempMessage(roomId, `[info][piconname:${pl.aid}] ➡ 引いたカード: ${c.suit}${c.rank}\n手札: ${hStr} (スコア: ${scoreStr})\n✨ 21到達！自動スタンドします。[/info]`);
                             g.turnIndex++; await proceedNextBJTurn(roomId);
                         } else {
-                            await sendTempMessage(roomId, `[info][title]🃏 ターン継続[/title][piconname:${pl.aid}]\n引いたカード: ${c.suit}${c.rank}\n手札: ${hStr} (スコア: ${score})\n\n/#hit または /#stand[/info]`);
+                            await sendTempMessage(roomId, `[info][title]🃏 ターン継続[/title][piconname:${pl.aid}]\n引いたカード: ${c.suit}${c.rank}\n手札: ${hStr} (スコア: ${scoreStr})\n\n/#hit または /#stand[/info]`);
                             startGameTimer(roomId, 60000);
                         }
                     } else if (/(^|\n)[/#]stand\b/.test(body)) {
                         pl.status = 'stand';
                         let desc = '';
-                        if (g.type === 'poker') {
-                            desc = `確定手札: ${pl.hand.map(c => c.suit + c.rank).join(' ')} (${getPokerRank(pl.hand).name})`;
-                        } else if (g.type === 'yacht') {
+                        if (g.type === 'yacht') {
                             desc = `確定サイコロ: ${pl.dice.map(d => `🎲${d}`).join(' ')} (${getYachtRank(pl.dice).name})`;
                         } else {
-                            desc = `スコア: ${calculateBJScore(pl.hand)}`;
+                            let score = calculateBJScore(pl.hand);
+                            let hStr = pl.hand.map(c => c.suit + c.rank).join(' ');
+                            desc = `確定手札: ${hStr} (スコア: ${score})`;
                         }
                         await sendTempMessage(roomId, `[info][piconname:${pl.aid}] スタンドしました。\n${desc}[/info]`);
                         
                         g.turnIndex++; 
-                        if (g.type === 'poker') await proceedNextPokerTurn(roomId);
-                        else if (g.type === 'yacht') await proceedNextYachtTurn(roomId);
+                        if (g.type === 'yacht') await proceedNextYachtTurn(roomId);
                         else await proceedNextBJTurn(roomId);
                     }
                 }
