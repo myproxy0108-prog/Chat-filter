@@ -3152,7 +3152,7 @@ app.post('/webhook', (req, res) => {
                     if (remSpins > 0) await updateQuest(senderId, 'pachinko_spin_count', remSpins);
                     
                     for(let i=0; i<remSpins; i++){
-                        if (Math.random() < (1/99)) {
+                        if (Math.random() < (1/299)) {
                             let streak = 1;
                             let rushPayout = 4000;
                             while (Math.random() < 0.70) {
