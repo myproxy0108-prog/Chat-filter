@@ -1,5 +1,3 @@
-
---- START OF FILE Paste July 28, 2026 - 6:25AM ---
 const express = require('express');
 const crypto = require('crypto');
 const axios = require('axios');
