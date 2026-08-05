@@ -4215,20 +4215,19 @@ app.post('/webhook', (req, res) => {
                 else if(myJob === 'パチプロ'){ e=Math.floor(Math.random()*1501)+500; m=`優良台のデータを取り、 ${formatNumber(e)} コイン稼ぎました！🎰`; }
                 else if(myJob === 'てんびん'){ e=Math.floor(Math.random()*1501)+1000; m=`人々の運命を計り、 ${formatNumber(e)} コイン稼ぎました！⚖️`; }
                 else if(myJob === '隻眼'){ e=Math.floor(Math.random()*2001)+1000; m=`裏社会の闇に紛れ、 ${formatNumber(e)} コイン稼ぎました！👁️‍🗨️`; }
-                
-                await supabase.from('players').update({ last_work_time: Date.now(), work_limit: player.work_limit - 1 }).eq('account_id', senderId);
-                await addMoney(senderId, e); 
-                await updateQuest(senderId, 'work_count', 1);
-                // /#work の処理の最後に追加
-                return sendTempMessage(roomId, `[info][title]💼 お仕事完了[/title][piconname:${senderId}]\n${m}\n(残り ${player.work_limit - 1} 回)[/info]`);
-            }
-            let js = player.job_state || {};
+                let js = player.job_state || {};
 js.work_total = (js.work_total || 0) + 1;
 await supabase.from('players').update({ job_state: JSON.stringify(js) }).eq('account_id', senderId);
 
 // バッジチェック (10, 50, 100, 500回)
 await checkProgressBadge(senderId, js.work_total, [1, 50, 100, 500], '働き者', roomId);
 
+                await supabase.from('players').update({ last_work_time: Date.now(), work_limit: player.work_limit - 1 }).eq('account_id', senderId);
+                await addMoney(senderId, e); 
+                await updateQuest(senderId, 'work_count', 1);
+                // /#work の処理の最後に追加
+                return sendTempMessage(roomId, `[info][title]💼 お仕事完了[/title][piconname:${senderId}]\n${m}\n(残り ${player.work_limit - 1} 回)[/info]`);
+            }
             const sM = body.match(/(^|\n)[/#]slot\s+(max|half|[0-9]+)/);
             if (sM && gambleActive) {
                 if (player.slot_count >= 5) return sendTempMessage(roomId, `[info]⚠️ ${makeReplyTag(senderId, roomId, msgId)}\n本日のスロットは上限に達しました！[/info]`);
