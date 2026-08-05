@@ -3158,7 +3158,7 @@ app.post('/webhook', (req, res) => {
                         }
 
                         displaySpins++;
-                        let isHit = Math.random() < (1/99);
+                        let isHit = Math.random() < (1/299);
                         let reach = false;
                         let reachType = null;
                         let reserve = '⚪';
@@ -3208,8 +3208,8 @@ app.post('/webhook', (req, res) => {
                         }
 
                         let streak = 1;
-                        let rushPayout = 4000;
-                        while (Math.random() < 0.70) {
+                        let rushPayout = 3000;
+                        while (Math.random() < 0.60) {
                             streak++;
                             rushPayout += Math.floor(Math.random() * 2000) + 3000;
                         }
