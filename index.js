@@ -3208,7 +3208,7 @@ app.post('/webhook', (req, res) => {
                         }
 
                         let streak = 1;
-                        let rushPayout = 3000;
+                        let rushPayout = 4000;
                         while (Math.random() < 0.60) {
                             streak++;
                             rushPayout += Math.floor(Math.random() * 2000) + 3000;
@@ -3230,7 +3230,7 @@ app.post('/webhook', (req, res) => {
                     for (let i = 0; i < balls; i++) { if (Math.random() < entryRate) remSpins++; }
                     
                     for(let i=0; i<remSpins; i++){
-                        if (Math.random() < (1/99)) {
+                        if (Math.random() < (1/279)) {
                             let streak = 1;
                             let rushPayout = 4000;
                             while (Math.random() < 0.70) {
