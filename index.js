@@ -3873,7 +3873,7 @@ app.post('/webhook', (req, res) => {
             }
 
             if (/(^|\n)[/#]help-gya\b/.test(body)) {
-                const helpMsg = `[info][title]🎰 カジノ＆ライフ 総合案内 (V56 Ultra Update)[/title]
+                const helpMsg = `[info][title]🎰 カジノ＆ライフ 総合案内 :)[/title]
 【 🏦 銀行・株式・クエスト 】
 /#status : 状態確認(所持金, 預金, 戦績, 純資産など)
 /#quest : 今日のデイリークエストを確認＆報酬受け取り
@@ -4167,17 +4167,17 @@ app.post('/webhook', (req, res) => {
 🏛️ 公務員 (費用: 2000)\n ▶ /#work (1200〜2000)
 🚓 警察官 (費用: 3000)\n ▶ /#work (1200〜2800)\n ▶ /#catch (30%の確率で犯人逮捕! 3200)
 ⚽ プロスポーツ選手 (費用: 5000)\n ▶ /#work (2000〜4000)\n ▶ /#goal (30%の確率でゴール! 4000)
+🎯 賞金稼ぎ (費用: 10,000)\n ▶ /#bounty [aid] でターゲット指定。その人が次に負けた時、負け金の10%を報酬として奪う(1日1回)
+🧮 数学者 (費用: 50,000)\n ▶ ルーレットの赤黒・偶数奇数等の2倍配当が「2.2倍」になる
+🎰 パチプロ (費用: 50,000)\n ▶ パチンコ遊技時の釘の入賞率が 5% から 7% に上がる
 🎰 賭博師 (費用: 200,000)\n ▶ 毎日初回ログイン時にスロット回数が自動で5〜10回分増加
+⚖️ てんびん (費用: 200,000)\n ▶ /#tenbin (1日1回、2択ゲームの勝率が30~50%UP。10%で逆に傾く)
+👁️‍🗨️ 隻眼 (費用: 400,000)\n ▶ /#sekigan (1日1回、最初の手札/ダイスが見えなくなるが配当+1倍)
 👑 ギャンブルオーナー (費用: 1,000,000)\n ▶ /#owner (1日1回、30分間他人のギャンブル負け金の50%を50%で回収)
 👁️ 未来人 (費用: 5,000,000)\n ▶ /#next-future (1日1回、70%の確率で現在進行中のゲームの未来を予知)
 🔄 逆転のギャンブラー (費用: 1,000,000)\n ▶ デイリーRTPが低いと、ギャンブルに負けた時80%の確率で賭け金が戻ってくる
 🏦 銀行員 (費用: 1,000,000)\n ▶ 毎日初回ログイン時に、銀行の預金に1%の複利利息が付与される
 🎩 大富豪の執事 (費用: 400,000)\n ▶ ランキング1位か2位の人が稼ぐ度に、その利益の0.1%を給与として得る
-🎯 賞金稼ぎ (費用: 10,000)\n ▶ /#bounty [aid] でターゲット指定。その人が次に負けた時、負け金の10%を報酬として奪う(1日1回)
-🧮 数学者 (費用: 50,000)\n ▶ ルーレットの赤黒・偶数奇数等の2倍配当が「2.2倍」になる
-🎰 パチプロ (費用: 50,000)\n ▶ パチンコ遊技時の釘の入賞率が 5% から 7% に上がる
-⚖️ てんびん (費用: 200,000)\n ▶ /#tenbin (1日1回、2択ゲームの勝率が30~50%UP。10%で逆に傾く)
-👁️‍🗨️ 隻眼 (費用: 400,000)\n ▶ /#sekigan (1日1回、最初の手札/ダイスが見えなくなるが配当+1倍)
 [hr]※転職コマンド: /#job 役職名[/info]`);
             }
 
@@ -4220,14 +4220,14 @@ app.post('/webhook', (req, res) => {
                 await addMoney(senderId, e); 
                 await updateQuest(senderId, 'work_count', 1);
                 // /#work の処理の最後に追加
-let js = player.job_state || {};
+                return sendTempMessage(roomId, `[info][title]💼 お仕事完了[/title][piconname:${senderId}]\n${m}\n(残り ${player.work_limit - 1} 回)[/info]`);
+            }
+            let js = player.job_state || {};
 js.work_total = (js.work_total || 0) + 1;
 await supabase.from('players').update({ job_state: JSON.stringify(js) }).eq('account_id', senderId);
 
 // バッジチェック (10, 50, 100, 500回)
 await checkProgressBadge(senderId, js.work_total, [1, 50, 100, 500], '働き者', roomId);
-                return sendTempMessage(roomId, `[info][title]💼 お仕事完了[/title][piconname:${senderId}]\n${m}\n(残り ${player.work_limit - 1} 回)[/info]`);
-            }
 
             const sM = body.match(/(^|\n)[/#]slot\s+(max|half|[0-9]+)/);
             if (sM && gambleActive) {
