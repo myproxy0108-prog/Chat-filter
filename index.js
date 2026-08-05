@@ -3153,7 +3153,7 @@ app.post('/webhook', (req, res) => {
 
                     for (let i = 0; i < spins; i++) {
                         if (activePachinko[senderId].skip) {
-                            hitFound = Math.random() < (1/99);
+                            hitFound = Math.random() < (1/279);
                             break;
                         }
 
