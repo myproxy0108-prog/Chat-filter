@@ -3153,7 +3153,7 @@ app.post('/webhook', (req, res) => {
 
                     for (let i = 0; i < spins; i++) {
                         if (activePachinko[senderId].skip) {
-                            hitFound = Math.random() < (1/229);
+                            hitFound = Math.random() < (1/100);
                             break;
                         }
 
@@ -3209,9 +3209,9 @@ app.post('/webhook', (req, res) => {
 
                         let streak = 1;
                         let rushPayout = 4000;
-                        while (Math.random() < 0.60) {
+                        while (Math.random() < 0.70) {
                             streak++;
-                            rushPayout += Math.floor(Math.random() * 2000) + 3000;
+                            rushPayout += Math.floor(Math.random() * 4000) + 3000;
                         }
                         
                         totalPayout += rushPayout;
@@ -3230,7 +3230,7 @@ app.post('/webhook', (req, res) => {
                     for (let i = 0; i < balls; i++) { if (Math.random() < entryRate) remSpins++; }
                     
                     for(let i=0; i<remSpins; i++){
-                        if (Math.random() < (1/229)) {
+                        if (Math.random() < (1/100)) {
                             let streak = 1;
                             let rushPayout = 4000;
                             while (Math.random() < 0.70) {
