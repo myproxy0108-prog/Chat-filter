@@ -1,3 +1,4 @@
+
 const express = require('express');
 const crypto = require('crypto');
 const axios = require('axios');
@@ -2940,177 +2941,7 @@ app.post('/webhook', (req, res) => {
                 return sendTempMessage(roomId, msg + `[/info]`);
             }
 
-            // --- パチンコ ---
-            if (/(^|\n)[/#]pachinko\s+([0-9]+)/.test(body) && gambleActive) {
-                if (activePachinko[senderId] && activePachinko[senderId].playing) {
-                    return sendTempMessage(roomId, `[info]⚠️ 既にパチンコをプレイ中です。(/#skip で演出をスキップできます)[/info]`);
-                }
-
-                let amt = parseInt(body.match(/(^|\n)[/#]pachinko\s+([0-9]+)/)[2], 10);
-                if (amt < 500) return sendTempMessage(roomId, `[info]⚠️ 最低賭け金は 500 コインです。[/info]`);
-                if (myMoney < amt) return sendTempMessage(roomId, `[info]⚠️ お金が足りません！[/info]`);
-                
-                let balls = Math.floor(amt / 4);
-                if (balls <= 0) return sendTempMessage(roomId, `[info]⚠️ 玉を借りられません。[/info]`);
-                
-                myMoney -= amt;
-                let updates = { money: myMoney };
-                
-                let entryRate = myJob === 'パチプロ' ? 0.07 : 0.05;
-                if (player.job_state.lucky_kugi_active) {
-                    entryRate = 1.0;
-                    player.job_state.lucky_kugi_active = false;
-                    updates.job_state = JSON.stringify(player.job_state);
-                }
-                await supabase.from('players').update(updates).eq('account_id', senderId);
-
-                activePachinko[senderId] = { playing: true, skip: false };
-                await updatePlayerStats(senderId, amt, 0, 'draw', false, roomId);
-
-                let totalPayout = 0;
-                let maxStreak = 0;
-
-                let msgRes = await chatworkClient.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(`[info][title]🎰 パチンコ[/title][piconname:${senderId}]\n投入: ${formatNumber(amt)} コイン (${balls}玉)\n入賞率(釘): ${Math.floor(entryRate*100)}%\n\n玉を打ち出しています...[/info]`)}`);
-                let mId = msgRes?.data?.message_id;
-
-                // 残玉がある限り回し続ける
-                while (balls > 0) {
-                    if (activePachinko[senderId].skip) break;
-                    let spins = 0;
-                    // 一旦100玉単位で消費して回転数を計算する
-                    let consume = Math.min(balls, 100);
-                    balls -= consume;
-                    for (let i = 0; i < consume; i++) {
-                        if (Math.random() < entryRate) spins++;
-                    }
-
-                    if (spins > 0) await updateQuest(senderId, 'pachinko_spin_count', spins);
-
-                    let hitFound = false;
-                    let displaySpins = 0;
-                    let currentMsg = `[info][title]🎰 パチンコ[/title][piconname:${senderId}]\n投入: ${formatNumber(amt)} コイン\n残玉: ${balls}玉\n`;
-
-                    for (let i = 0; i < spins; i++) {
-                        if (activePachinko[senderId].skip) {
-                            hitFound = Math.random() < (1/99);
-                            break;
-                        }
-
-                        displaySpins++;
-                        let isHit = Math.random() < (1/99);
-                        let reach = false;
-                        let reachType = null;
-                        let reserve = '⚪';
-
-                        if(isHit) {
-                            reach = true;
-                            let r = Math.random();
-                            if(r < 0.6) { reachType = 'ストーリー'; reserve = '🔥'; }
-                            else if(r < 0.9) { reachType = 'キャラ'; reserve = '🔴'; }
-                            else { reachType = 'ノーマル'; reserve = '🔵'; }
-                        } else {
-                            if(Math.random() < 0.10) { 
-                                reach = true;
-                                let r = Math.random();
-                                if(r < 0.05) { reachType = 'ストーリー'; reserve = '🔴'; }
-                                else if(r < 0.25) { reachType = 'キャラ'; reserve = '🔵'; }
-                                else { reachType = 'ノーマル'; reserve = '🔵'; }
-                            }
-                        }
-
-                        if (reach) {
-                            await updateQuest(senderId, 'pachinko_reach_count', 1);
-                            if (mId && !activePachinko[senderId].skip) {
-                                await editMessage(roomId, mId, currentMsg + `\n${displaySpins}回転目... 保留変化！ [ ${reserve} ]\n[/info]`);
-                                await sleep(1000);
-                                if (activePachinko[senderId].skip) { isHit ? hitFound = true : null; break; }
-                                let rName = reachType === 'ストーリー' ? '[title]激熱[/title] ストーリーリーチ！' : `${reachType}リーチ`;
-                                await editMessage(roomId, mId, currentMsg + `\n${displaySpins}回転目... 保留[ ${reserve} ]\n🚨 リーチ発生！ (${rName})\n[/info]`);
-                                await sleep(2000);
-                                if (activePachinko[senderId].skip) { isHit ? hitFound = true : null; break; }
-                                if (isHit) {
-                                    await editMessage(roomId, mId, currentMsg + `\n${displaySpins}回転目... 保留[ ${reserve} ]\n🚨 リーチ発生！ (${rName})\n\n🎯 大当たり！！！\n[/info]`);
-                                    hitFound = true;
-                                    break;
-                                } else {
-                                    await editMessage(roomId, mId, currentMsg + `\n${displaySpins}回転目... 保留[ ${reserve} ]\n🚨 リーチ発生！ (${rName})\n\n❌ ハズレ...\n[/info]`);
-                                    await sleep(1000);
-                                }
-                            }
-                        }
-                    }
-
-                    if (hitFound) {
-                        if (mId && !activePachinko[senderId].skip) {
-                            await sleep(1000);
-                            await editMessage(roomId, mId, currentMsg + `\n🎯 大当たり！！！\n\n⚡ RUSH突入！ (継続率70%)[/info]`);
-                            await sleep(2000);
-                        }
-
-                        let streak = 1;
-                        let rushPayout = 4000;
-                        while (Math.random() < 0.70) {
-                            streak++;
-                            rushPayout += Math.floor(Math.random() * 2000) + 3000;
-                        }
-                        
-                        totalPayout += rushPayout;
-                        if (streak > maxStreak) maxStreak = streak;
-
-                        if (mId && !activePachinko[senderId].skip) {
-                            await editMessage(roomId, mId, currentMsg + `\n🎯 大当たり！！！\n⚡ RUSH終了\n\n🔥 ${streak} 連チャン！\n💰 一撃獲得: ${formatNumber(rushPayout)} コイン\n(引き続き残玉を消化します...)[/info]`);
-                            await sleep(2000);
-                        }
-                    }
-                }
-
-                // スキップされた場合の補完処理 (残玉を一瞬で計算)
-                if (activePachinko[senderId].skip && balls > 0) {
-                    let remSpins = 0;
-                    for (let i = 0; i < balls; i++) { if (Math.random() < entryRate) remSpins++; }
-                    if (remSpins > 0) await updateQuest(senderId, 'pachinko_spin_count', remSpins);
-                    
-                    for(let i=0; i<remSpins; i++){
-                        if (Math.random() < (1/99)) {
-                            let streak = 1;
-                            let rushPayout = 4000;
-                            while (Math.random() < 0.70) {
-                                streak++;
-                                rushPayout += Math.floor(Math.random() * 2000) + 3000;
-                            }
-                            totalPayout += rushPayout;
-                            if (streak > maxStreak) maxStreak = streak;
-                        }
-                    }
-                    balls = 0;
-                }
-
-                let js = player.job_state || {};
-                if (maxStreak > (js.pachinko_max_streak || 0)) {
-                    js.pachinko_max_streak = maxStreak;
-                    await supabase.from('players').update({ job_state: JSON.stringify(js) }).eq('account_id', senderId);
-                }
-
-                if (totalPayout > 0) {
-                    let { stolen, jokerMsg } = await processJoker(senderId, totalPayout, roomId);
-                    let finalWin = totalPayout - stolen;
-
-                    await addMoney(senderId, finalWin);
-                    await updatePlayerStats(senderId, 0, totalPayout, 'win', true, roomId); // 賭け金は既に引かれている
-                    await processButler(senderId, totalPayout, roomId);
-
-                    if (mId) {
-                        await editMessage(roomId, mId, `[info][title]🎰 パチンコ 最終結果[/title][piconname:${senderId}]\n投入: ${formatNumber(amt)} コイン\n\n🔥 最高連チャン: ${maxStreak} 回！\n💰 最終獲得: ${formatNumber(finalWin)} コイン${jokerMsg}[/info]`);
-                    }
-                } else {
-                    if (mId) {
-                        await editMessage(roomId, mId, `[info][title]🎰 パチンコ 最終結果[/title][piconname:${senderId}]\n投入: ${formatNumber(amt)} コイン\n\n玉はすべて吸い込まれた...\n💀 獲得: 0 コイン[/info]`);
-                    }
-                }
-                
-                delete activePachinko[senderId];
-                return;
-            }
+    
 
             // --- スクラッチくじ ---
             if (/(^|\n)[/#]scratch\s+([0-9]+)/.test(body) && gambleActive) {
@@ -3264,9 +3095,9 @@ app.post('/webhook', (req, res) => {
                         }
                     }
                     return sendTempMessage(roomId, `[info]💨 【目眩し弾薬】を使用した！\n煙幕に紛れ、自分を狙っていた賞金稼ぎやジョーカーのターゲット設定を ${removedCount} 件 解除しました！[/info]`);
-                } else if (itemName === 'ラッキー釘') {
+                } else if (itemName === '') {
                     player.items[itemName]--;
-                    player.job_state.daily_item_used = true;
+                    player.job_state.daily_item_used = false;
                     player.job_state.lucky_kugi_active = true;
                     await supabase.from('players').update({ items: JSON.stringify(player.items), job_state: JSON.stringify(player.job_state) }).eq('account_id', senderId);
                     return sendTempMessage(roomId, `[info]🔨 【ラッキー釘】を使用しました！\n次回の /#pachinko で入賞率が 100% になります。[/info]`);
@@ -3315,7 +3146,6 @@ app.post('/webhook', (req, res) => {
                     'ジョーカーの招待状': 300000,
                     'ダブルアップ・コイン': 100000,
                     '目眩し弾薬': 50000,
-                    'ラッキー釘': 50000,
                     '黄金の招き猫': 3000000,
                     '身代わりの人形': 2000000,
                     'デス・リバース': 300000
