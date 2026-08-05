@@ -256,7 +256,16 @@ const addBadgeDB = async (aid, badgeName, roomId) => {
         if (roomId) sendMessage(roomId, `[info]🎖️ [piconname:${aid}] が新しい称号【${badgeName}】を獲得しました！[/info]`);
     }
 };
-
+// 累積値と目標の配列を渡し、達成していれば称号を付与する関数
+const checkProgressBadge = async (aid, currentValue, thresholds, badgePrefix, roomId) => {
+    for (let t of thresholds) {
+        if (currentValue >= t) {
+            let badgeName = `【${badgePrefix}】${t}`;
+            // addBadgeDB内で「既に持っているか」を弾くため、全閾値をチェックしてOK
+            await addBadgeDB(aid, badgeName, roomId);
+        }
+    }
+};
 const checkHasItem = async (aid, itemName) => {
     let { data: p } = await supabase.from('players').select('items').eq('account_id', aid).single();
     if (!p) return false;
@@ -4210,6 +4219,13 @@ app.post('/webhook', (req, res) => {
                 await supabase.from('players').update({ last_work_time: Date.now(), work_limit: player.work_limit - 1 }).eq('account_id', senderId);
                 await addMoney(senderId, e); 
                 await updateQuest(senderId, 'work_count', 1);
+                // /#work の処理の最後に追加
+let js = player.job_state || {};
+js.work_total = (js.work_total || 0) + 1;
+await supabase.from('players').update({ job_state: JSON.stringify(js) }).eq('account_id', senderId);
+
+// バッジチェック (10, 50, 100, 500回)
+await checkProgressBadge(senderId, js.work_total, [1, 50, 100, 500], '働き者', roomId);
                 return sendTempMessage(roomId, `[info][title]💼 お仕事完了[/title][piconname:${senderId}]\n${m}\n(残り ${player.work_limit - 1} 回)[/info]`);
             }
 
