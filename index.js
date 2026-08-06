@@ -2850,6 +2850,27 @@ app.post('/webhook', (req, res) => {
                     return sendTempMessage(roomId, `[info]⏩ [piconname:${senderId}] 演出をスキップしました。結果を直ちに計算します。[/info]`);
                 }
             }
+            // 日付が変わったかどうかのチェック
+if (localLastResetDate !== today) {
+    // データベース上の最終リセット日を取得
+    const { data: configDate } = await supabase.from('config').select('value').eq('key', 'last_reset_date').single();
+    
+    // DBの日付と今日が違う場合（＝今日最初のアクションの場合）
+    if (!configDate || configDate.value !== today) {
+        // ★ ここで全プレイヤーのカウントをリセット
+        await supabase.from('players').update({ 
+            slot_count: 0,      // スロット回数を0に
+            work_limit: 10,     // 仕事上限を10に
+            work_date: null, 
+            skill_date: null, 
+            omikuji_date: null 
+        }).neq('account_id', '0'); // BOT以外の全ユーザー対象
+
+        // 最終リセット日を今日に更新
+        await supabase.from('config').upsert({ key: 'last_reset_date', value: today });
+        localLastResetDate = today;
+    }
+}
 
             let rankCmd = body.trim().match(/^[/#](winner-rank|rtp-rank|winrate-rank|worst-rank|daily-rank|drtp-rank|rush-rank)$/);
             if (rankCmd) {
