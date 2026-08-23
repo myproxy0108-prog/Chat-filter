@@ -1,4 +1,3 @@
-
 const express = require('express');
 const crypto = require('crypto');
 const axios = require('axios');
@@ -245,26 +244,71 @@ const updateKabuPrice = async () => {
 };
 
 // --- お金・戦績管理・アイテム・クエスト管理 ---
-const addBadgeDB = async (aid, badgeName, roomId) => {
+
+// 実績(称号)を1つ取得した際の段階別報酬 (1個目, 2個目, 3個目...の順で増加)
+const ACHIEVEMENT_TIER_REWARDS = [10000, 30000, 50000, 100000, 200000, 300000, 400000];
+// 1つの実績カテゴリの全段階をコンプリートした際の追加ボーナス
+const ACHIEVEMENT_COMPLETE_BONUS = 500000;
+
+// 称号をDBに追加する。新規追加時のみ true を返す(重複防止)
+const addBadgeDB = async (aid, badgeName, roomId, reward = 0) => {
+    let { data: p } = await supabase.from('players').select('job_state').eq('account_id', aid).single();
+    if (!p) return false;
+    let js = typeof p.job_state === 'string' ? JSON.parse(p.job_state || '{}') : (p.job_state || {});
+    if (!js.badges) js.badges = [];
+    if (js.badges.includes(badgeName)) return false;
+
+    js.badges.push(badgeName);
+    await supabase.from('players').update({ job_state: JSON.stringify(js) }).eq('account_id', aid);
+
+    let rewardMsg = "";
+    if (reward > 0) {
+        await addMoney(aid, reward);
+        rewardMsg = ` (+${formatNumber(reward)} コイン)`;
+    }
+    let targetRoom = roomId || lastActiveRoomId;
+    if (targetRoom) sendMessage(targetRoom, `[info]🎖️ [piconname:${aid}] が新しい称号【${badgeName}】を獲得しました！${rewardMsg}[/info]`);
+    return true;
+};
+
+// 1つの実績カテゴリを完全制覇した際のボーナスを付与(1カテゴリにつき1回のみ)
+const grantAchievementComplete = async (aid, badgePrefix, roomId) => {
     let { data: p } = await supabase.from('players').select('job_state').eq('account_id', aid).single();
     if (!p) return;
     let js = typeof p.job_state === 'string' ? JSON.parse(p.job_state || '{}') : (p.job_state || {});
-    if (!js.badges) js.badges = [];
-    if (!js.badges.includes(badgeName)) {
-        js.badges.push(badgeName);
-        await supabase.from('players').update({ job_state: JSON.stringify(js) }).eq('account_id', aid);
-        if (roomId) sendMessage(roomId, `[info]🎖️ [piconname:${aid}] が新しい称号【${badgeName}】を獲得しました！[/info]`);
-    }
+    if (!js.completed_achievements) js.completed_achievements = [];
+    if (js.completed_achievements.includes(badgePrefix)) return;
+
+    js.completed_achievements.push(badgePrefix);
+    await supabase.from('players').update({ job_state: JSON.stringify(js) }).eq('account_id', aid);
+    await addMoney(aid, ACHIEVEMENT_COMPLETE_BONUS);
+
+    let targetRoom = roomId || lastActiveRoomId;
+    if (targetRoom) sendMessage(targetRoom, `[info]🏆 [piconname:${aid}] は実績【${badgePrefix}】を完全制覇しました！\nコンプリートボーナス +${formatNumber(ACHIEVEMENT_COMPLETE_BONUS)} コインを獲得！[/info]`);
 };
-// 累積値と目標の配列を渡し、達成していれば称号を付与する関数
+
+// 累積値(または現在値)と目標の配列を渡し、達成していれば称号+報酬を付与する関数
 const checkProgressBadge = async (aid, currentValue, thresholds, badgePrefix, roomId) => {
-    for (let t of thresholds) {
+    for (let i = 0; i < thresholds.length; i++) {
+        let t = thresholds[i];
         if (currentValue >= t) {
             let badgeName = `【${badgePrefix}】${t}`;
+            let reward = ACHIEVEMENT_TIER_REWARDS[i] !== undefined ? ACHIEVEMENT_TIER_REWARDS[i] : ACHIEVEMENT_TIER_REWARDS[ACHIEVEMENT_TIER_REWARDS.length - 1];
             // addBadgeDB内で「既に持っているか」を弾くため、全閾値をチェックしてOK
-            await addBadgeDB(aid, badgeName, roomId);
+            let granted = await addBadgeDB(aid, badgeName, roomId, reward);
+            if (granted && i === thresholds.length - 1) {
+                await grantAchievementComplete(aid, badgePrefix, roomId);
+            }
         }
     }
+};
+
+// プレイヤーの保有株式総数(カジノ株+個別銘柄)を計算
+const getTotalStockCount = (kabuOwned, stocksRaw) => {
+    let total = kabuOwned || 0;
+    let stocksObj = typeof stocksRaw === 'string' ? JSON.parse(stocksRaw || '{}') : (stocksRaw || {});
+    for (let k in stocksObj) total += (stocksObj[k] || 0);
+    return total;
 };
 const checkHasItem = async (aid, itemName) => {
     let { data: p } = await supabase.from('players').select('items').eq('account_id', aid).single();
@@ -295,7 +339,7 @@ const tryUseItem = async (aid, itemName) => {
     return { success: true, msg: "" };
 };
 
-const processBuffs = async (aid, isWin, isLose, isDraw, mult, resTxt) => {
+const processBuffs = async (aid, isWin, isLose, isDraw, mult, resTxt, betAmount = 0) => {
     let { data: pData } = await supabase.from('players').select('job_state').eq('account_id', aid).single();
     let js = pData && typeof pData.job_state === 'string' ? JSON.parse(pData.job_state || '{}') : (pData?.job_state || {});
     let updated = false;
@@ -317,6 +361,8 @@ const processBuffs = async (aid, isWin, isLose, isDraw, mult, resTxt) => {
         if (guess === coinResult) {
             mult *= 2; 
             resTxt += `🪙 ダブルアップ [${coinResult}] ➡ 予想的中！配当2倍！ `;
+            // 【貪欲に】ダブルアップコイン成功回数
+            js.double_up_success_count = (js.double_up_success_count || 0) + 1;
         } else {
             isWin = false; isLose = true; isDraw = false;
             resTxt += `🪙 ダブルアップ [${coinResult}] ➡ 予想外れ... 賭け金没収！ `;
@@ -331,8 +377,31 @@ const processBuffs = async (aid, isWin, isLose, isDraw, mult, resTxt) => {
         js.sekigan_active = false; updated = true;
     }
 
+    // 【幸運の四つ葉】所持していて発動中なら勝利時の配当を+0.3倍
+    if (isWin && js.clover_active) {
+        js.clover_active = false; updated = true;
+        mult += 0.3;
+        resTxt += `🍀 【幸運の四つ葉】の効果で配当が少しアップ！ `;
+    } else if (isLose && js.clover_active) {
+        js.clover_active = false; updated = true;
+    }
+
+    // 【保険証書】負けた際に賭け金の30%を返還(1回限り)
+    if (isLose && js.insurance_active) {
+        js.insurance_active = false; updated = true;
+        let refund = Math.floor(betAmount * 0.3);
+        if (refund > 0) {
+            await addMoney(aid, refund);
+            resTxt += `📄 【保険証書】が発動し、賭け金の30% (${formatNumber(refund)} コイン) が返還されました。 `;
+        }
+    }
+
     if (updated) {
         await supabase.from('players').update({ job_state: JSON.stringify(js) }).eq('account_id', aid);
+    }
+    // 【貪欲に】ダブルアップコイン成功回数の実績チェック
+    if (js.double_up_success_count) {
+        await checkProgressBadge(aid, js.double_up_success_count, [1, 5, 10, 25, 50], '貪欲に');
     }
     
     return { isWin, isLose, isDraw, mult, resTxt };
@@ -389,9 +458,14 @@ const addMoney = async (accountId, amount) => {
             items: items, job_state: js
         });
     }
+
+    // 【大金持ち】所持金の実績チェック (金額が増えた場合のみ)
+    if (amount > 0) {
+        await checkProgressBadge(accountId, money, [1000000, 5000000, 10000000, 50000000, 100000000], '大金持ち');
+    }
 };
 
-const updatePlayerStats = async (accountId, betAmount, returnAmount, resultType, isTableGame = false, isSlotOrPachinko = false) => {
+const updatePlayerStats = async (accountId, betAmount, returnAmount, resultType, isTableGame = false, isSlotOrPachinko = false, playerCount = 1, isMaxBet = false) => {
     const { data: p } = await supabase.from('players').select('plays, wins, loses, total_bet, total_return, job_state').eq('account_id', accountId).single();
     if (!p) return;
     let plays = (p.plays || 0) + 1;
@@ -417,11 +491,41 @@ const updatePlayerStats = async (accountId, betAmount, returnAmount, resultType,
         js.daily_quests.slot_count++;
     }
 
+    // isTableGame && !isSlotOrPachinko ＝ 純粋なテーブルゲーム(TG)判定 (パチンコ・スロットは除外)
+    let isPureTG = isTableGame && !isSlotOrPachinko;
+
+    // 【ベテランギャンブラー】TG勝利回数 ＆ 【一か八か】/#bet max での勝利回数
+    if (resultType === 'win' && isPureTG) {
+        js.tg_wins = (js.tg_wins || 0) + 1;
+        if (isMaxBet) js.bet_max_wins = (js.bet_max_wins || 0) + 1;
+    }
+    // 【仲間と共に】3人以上でのTG参加回数
+    if (isPureTG && playerCount >= 3) {
+        js.tg_3p_count = (js.tg_3p_count || 0) + 1;
+    }
+    // 【10倍返し】10倍以上の配当での勝利回数 (全ゲーム共通)
+    if (resultType === 'win' && betAmount > 0 && returnAmount > 0 && (returnAmount / betAmount) >= 10) {
+        js.ten_x_wins = (js.ten_x_wins || 0) + 1;
+    }
+
     await supabase.from('players').update({ plays, wins, loses, total_bet, total_return, job_state: JSON.stringify(js) }).eq('account_id', accountId);
 
-    if (wins === 1) addBadgeDB(accountId, '初勝利');
-    if (wins === 10) addBadgeDB(accountId, '駆け出しギャンブラー');
-    if (wins === 100) addBadgeDB(accountId, 'ベテランギャンブラー');
+    // --- 実績判定 ---
+    if (resultType === 'win' && isPureTG) {
+        await checkProgressBadge(accountId, js.tg_wins, [10, 50, 100, 500, 1000], 'ベテランギャンブラー');
+        if (isMaxBet) await checkProgressBadge(accountId, js.bet_max_wins, [1, 10, 50, 100], '一か八か');
+    }
+    if (isPureTG && playerCount >= 3) {
+        await checkProgressBadge(accountId, js.tg_3p_count, [3, 10, 25, 100], '仲間と共に');
+    }
+    if (js.ten_x_wins) {
+        await checkProgressBadge(accountId, js.ten_x_wins, [1, 5, 10, 50, 100], '10倍返し');
+    }
+    // 【豪運の持ち主】通算勝率 (最低30戦プレイしてから判定。バランス調整のための最低試行数)
+    if (plays >= 30) {
+        let winRate = (wins / plays) * 100;
+        await checkProgressBadge(accountId, winRate, [50, 60, 70], '豪運の持ち主');
+    }
 };
 
 const updateWinStreak = async (accountId, result, roomId) => {
@@ -542,6 +646,15 @@ const processBounty = async (loserAid, lostAmount, roomId) => {
                     bountyMsg += `\n🎯 (※賞金稼ぎ [piconname:${h.account_id}] に負け金の一部 ${formatNumber(reward)} コインを奪われました)`;
                 }
             }
+        }
+    }
+    // 【保険屋】自分自身の負けに対する自動20%返還パッシブ
+    let { data: selfP } = await supabase.from('players').select('job').eq('account_id', loserAid).single();
+    if (selfP && selfP.job === '保険屋') {
+        let refund = Math.floor(lostAmount * 0.2);
+        if (refund > 0) {
+            await addMoney(loserAid, refund);
+            bountyMsg += `\n🛡️ [保険屋]の特権により、負け金の一部 ${formatNumber(refund)} コインが自動的に返還されました。`;
         }
     }
     return bountyMsg;
@@ -1738,7 +1851,7 @@ const resolveBJ = async (roomId) => {
 
         let winAmtForStats = 0; let resType = 'lose';
         
-        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, isBJ ? 2.5 : 2, resTxt);
+        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, isBJ ? 2.5 : 2, resTxt, player.bet);
         isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
         let mult = buffRes.mult; resTxt = buffRes.resTxt;
 
@@ -1773,7 +1886,7 @@ const resolveBJ = async (roomId) => {
                 totalDealerProfit += player.bet;
             }
         }
-        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true);
+        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true, false, game.players.length, !!player.usedMax);
         
         if (isWin) await updateWinStreak(player.aid, 'win', roomId);
         else if (isLose && !resTxt.includes('返金')) await updateWinStreak(player.aid, 'lose', roomId);
@@ -1814,7 +1927,7 @@ const resolvePoker = async (roomId) => {
 
         let winAmtForStats = 0; let resType = 'lose';
         
-        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, 2.0, resTxt);
+        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, 2.0, resTxt, player.bet);
         isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
         let mult = buffRes.mult; resTxt = buffRes.resTxt;
 
@@ -1849,7 +1962,7 @@ const resolvePoker = async (roomId) => {
                 totalDealerProfit += player.bet;
             }
         }
-        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true);
+        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true, false, game.players.length, !!player.usedMax);
         
         if (isWin) await updateWinStreak(player.aid, 'win', roomId);
         else if (isLose && !resTxt.includes('返金')) await updateWinStreak(player.aid, 'lose', roomId);
@@ -1876,6 +1989,18 @@ const resolveYacht = async (roomId) => {
     for (let player of game.players) {
         let pEv = getYachtRank(player.dice);
         let pStr = player.dice.map(d => `🎲${d}`).join('');
+
+        // 【ヨット！】ヨット役(5カード)を出した回数 ＆ 【1/7776】全て1のピンゾロヨットの回数
+        if (pEv.rank === 6) {
+            let { data: yJs } = await supabase.from('players').select('job_state').eq('account_id', player.aid).single();
+            let js3 = yJs && typeof yJs.job_state === 'string' ? JSON.parse(yJs.job_state || '{}') : (yJs?.job_state || {});
+            js3.yacht_count = (js3.yacht_count || 0) + 1;
+            let isPinzoro = player.dice.every(d => d === 1);
+            if (isPinzoro) js3.pinzoro_yacht_count = (js3.pinzoro_yacht_count || 0) + 1;
+            await supabase.from('players').update({ job_state: JSON.stringify(js3) }).eq('account_id', player.aid);
+            await checkProgressBadge(player.aid, js3.yacht_count, [1, 3, 5, 10, 25], 'ヨット！', roomId);
+            if (isPinzoro) await checkProgressBadge(player.aid, js3.pinzoro_yacht_count, [1, 2, 4, 8], '1/7776', roomId);
+        }
         let comp = compareYacht(pEv, botEv);
         let isWin = comp > 0, isDraw = comp === 0, isLose = comp < 0;
         
@@ -1895,7 +2020,7 @@ const resolveYacht = async (roomId) => {
 
         let winAmtForStats = 0; let resType = 'lose';
         
-        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, 2.0, resTxt);
+        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, 2.0, resTxt, player.bet);
         isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
         let mult = buffRes.mult; resTxt = buffRes.resTxt;
 
@@ -1930,7 +2055,7 @@ const resolveYacht = async (roomId) => {
                 totalDealerProfit += player.bet;
             }
         }
-        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true);
+        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true, false, game.players.length, !!player.usedMax);
         
         if (isWin) await updateWinStreak(player.aid, 'win', roomId);
         else if (isLose && !resTxt.includes('返金')) await updateWinStreak(player.aid, 'lose', roomId);
@@ -1983,7 +2108,7 @@ const resolveButa = async (roomId) => {
 
         let winAmtForStats = 0; let resType = 'lose';
         
-        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, 2.0, resTxt);
+        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, 2.0, resTxt, player.bet);
         isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
         let mult = buffRes.mult; resTxt = buffRes.resTxt;
 
@@ -2018,7 +2143,7 @@ const resolveButa = async (roomId) => {
                 totalDealerProfit += player.bet;
             }
         } 
-        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true);
+        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true, false, game.players.length, !!player.usedMax);
         
         if (isWin) await updateWinStreak(player.aid, 'win', roomId);
         else if (isLose && !resTxt.includes('返金')) await updateWinStreak(player.aid, 'lose', roomId);
@@ -2059,7 +2184,7 @@ const resolveChinchiro = async (roomId) => {
         let winAmtForStats = 0; let resType = 'lose';
         
         let bMult = r.mult > 0 ? r.mult + 1 : 1;
-        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, bMult, resTxt);
+        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, bMult, resTxt, player.bet);
         isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
         let mult = buffRes.mult; resTxt = buffRes.resTxt;
 
@@ -2093,7 +2218,7 @@ const resolveChinchiro = async (roomId) => {
                 totalDealerProfit += player.bet;
             }
         }
-        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true);
+        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true, false, game.players.length, !!player.usedMax);
         
         if (isWin) await updateWinStreak(player.aid, 'win', roomId);
         else if (isLose && !resTxt.includes('返金')) await updateWinStreak(player.aid, 'lose', roomId);
@@ -2159,7 +2284,7 @@ const resolveChouhan = async (roomId, mId) => {
         
         let winAmtForStats = 0; let resType = 'lose';
         
-        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, 2.0, resTxt);
+        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, 2.0, resTxt, player.bet);
         isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
         let mult = buffRes.mult; resTxt = buffRes.resTxt;
 
@@ -2193,7 +2318,7 @@ const resolveChouhan = async (roomId, mId) => {
                 totalDealerProfit += player.bet;
             }
         }
-        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true);
+        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true, false, game.players.length, !!player.usedMax);
         
         if (isWin) await updateWinStreak(player.aid, 'win', roomId);
         else if (isLose && !resTxt.includes('返金')) await updateWinStreak(player.aid, 'lose', roomId);
@@ -2270,7 +2395,7 @@ const resolveSicbo = async (roomId, mId) => {
 
         let winAmtForStats = 0; let resType = 'lose';
 
-        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, bMult, resTxt);
+        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, bMult, resTxt, player.bet);
         isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
         let mult = buffRes.mult; resTxt = buffRes.resTxt;
 
@@ -2304,7 +2429,7 @@ const resolveSicbo = async (roomId, mId) => {
                 totalDealerProfit += player.bet;
             }
         }
-        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true);
+        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true, false, game.players.length, !!player.usedMax);
         
         if (isWin) await updateWinStreak(player.aid, 'win', roomId);
         else if (isLose && !resTxt.includes('返金')) await updateWinStreak(player.aid, 'lose', roomId);
@@ -2382,7 +2507,7 @@ const resolveRoulette = async (roomId, resultNum) => {
 
         let winAmtForStats = 0; let resType = 'lose';
         
-        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, bMult, resTxt);
+        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, bMult, resTxt, player.bet);
         isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
         let mult = buffRes.mult; resTxt = buffRes.resTxt;
 
@@ -2416,7 +2541,7 @@ const resolveRoulette = async (roomId, resultNum) => {
                 totalDealerProfit += player.bet;
             }
         }
-        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true);
+        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true, false, game.players.length, !!player.usedMax);
         
         if (isWin) await updateWinStreak(player.aid, 'win', roomId);
         else if (isLose && !resTxt.includes('返金')) await updateWinStreak(player.aid, 'lose', roomId);
@@ -2472,7 +2597,7 @@ const resolveDerby = async (roomId, mId) => {
 
         let winAmtForStats = 0; let resType = 'lose';
         
-        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, odd, resTxt);
+        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, odd, resTxt, player.bet);
         isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
         let mult = buffRes.mult; resTxt = buffRes.resTxt;
 
@@ -2506,7 +2631,7 @@ const resolveDerby = async (roomId, mId) => {
                 totalDealerProfit += player.bet;
             }
         }
-        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true);
+        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true, false, game.players.length, !!player.usedMax);
         
         if (isWin) await updateWinStreak(player.aid, 'win', roomId);
         else if (isLose && !resTxt.includes('返金')) await updateWinStreak(player.aid, 'lose', roomId);
@@ -2546,7 +2671,7 @@ const resolveCrash = async (roomId, mId) => {
 
         let winAmtForStats = 0; let resType = 'lose';
         
-        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, targetMult, resTxt);
+        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, targetMult, resTxt, player.bet);
         isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
         let mult = buffRes.mult; resTxt = buffRes.resTxt;
 
@@ -2580,7 +2705,7 @@ const resolveCrash = async (roomId, mId) => {
                 totalDealerProfit += player.bet;
             }
         }
-        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true);
+        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true, false, game.players.length, !!player.usedMax);
         
         if (isWin) await updateWinStreak(player.aid, 'win', roomId);
         else if (isLose && !resTxt.includes('返金')) await updateWinStreak(player.aid, 'lose', roomId);
@@ -2654,7 +2779,7 @@ const resolveHighLow = async (roomId, mId) => {
 
         let winAmtForStats = 0; let resType = 'lose';
         
-        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, 2.0, resTxt);
+        let buffRes = await processBuffs(player.aid, isWin, isLose, isDraw, 2.0, resTxt, player.bet);
         isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
         let mult = buffRes.mult; resTxt = buffRes.resTxt;
 
@@ -2689,7 +2814,7 @@ const resolveHighLow = async (roomId, mId) => {
                 totalDealerProfit += player.bet;
             }
         }
-        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true);
+        await updatePlayerStats(player.aid, player.bet, winAmtForStats, resType, true, false, game.players.length, !!player.usedMax);
         
         if (isWin) await updateWinStreak(player.aid, 'win', roomId);
         else if (!isDraw && !resTxt.includes('返金')) await updateWinStreak(player.aid, 'lose', roomId);
@@ -2741,7 +2866,7 @@ const resolveDaifugo = async (roomId) => {
 
             let winAmtForStats = 0; let resType = 'lose';
             
-            let buffRes = await processBuffs(p.aid, isWin, isLose, isDraw, defaultMult, resTxt);
+            let buffRes = await processBuffs(p.aid, isWin, isLose, isDraw, defaultMult, resTxt, p.bet);
             isWin = buffRes.isWin; isLose = buffRes.isLose; isDraw = buffRes.isDraw;
             let mult = buffRes.mult; resTxt = buffRes.resTxt;
 
@@ -2775,7 +2900,8 @@ const resolveDaifugo = async (roomId) => {
                     totalDealerProfit += p.bet;
                 }
             }
-            await updatePlayerStats(p.aid, p.bet, winAmtForStats, resType, true);
+            let realPlayerCount = game.players.filter(x => x.aid !== 'bot').length;
+            await updatePlayerStats(p.aid, p.bet, winAmtForStats, resType, true, false, realPlayerCount, !!p.usedMax);
             
             if (isWin) await updateWinStreak(p.aid, 'win', roomId);
             else if (isLose && !resTxt.includes('返金')) await updateWinStreak(p.aid, 'lose', roomId);
@@ -3019,18 +3145,42 @@ if (localLastResetDate !== today) {
                     jobMsg += `\n😸 [黄金の招き猫] 効果: 預金に利息(+0.5%)がつき、${formatNumber(catBonus)} コイン増えました！`;
                 }
 
+                let bankInterest = 0;
                 if (player.job === '銀行員' && player.bank > 0) {
-                    let interest = Math.floor(player.bank * 0.01);
-                    player.bank += interest;
-                    jobMsg += `\n🏦 [銀行員] 特権: 預金に利息(1%)がつき、${formatNumber(interest)} コイン増えました！`;
+                    bankInterest = Math.floor(player.bank * 0.01);
+                    player.bank += bankInterest;
+                    jobMsg += `\n🏦 [銀行員] 特権: 預金に利息(1%)がつき、${formatNumber(bankInterest)} コイン増えました！`;
                 }
-                
+
+                // 【時は金なり】利息(銀行員+黄金の招き猫)で獲得した金額の累計
+                let totalInterestGained = catBonus + bankInterest;
+                if (totalInterestGained > 0) {
+                    player.job_state.interest_total = (player.job_state.interest_total || 0) + totalInterestGained;
+                }
+
                 if (player.job === '賭博師' && player.skill_date !== today) {
                     let addCount = Math.floor(Math.random() * 6) + 5;
                     player.slot_count = (player.slot_count || 0) - addCount;
                     player.skill_date = today;
                     jobMsg += `\n🎰 [賭博師] 特権: スロット/パチンコ回数が ${addCount} 回追加されました！`;
                 }
+
+                // 【トレーダー】保有資産(株)から毎日配当金
+                if (player.job === 'トレーダー') {
+                    let stockVal = (player.kabu_owned || 0) * kabuData.price;
+                    let myStocksForDiv = player.stocks ? (typeof player.stocks === 'string' ? JSON.parse(player.stocks || '{}') : player.stocks) : {};
+                    for (let k in myStocksForDiv) { if (kabuData.realStocks[k]) stockVal += myStocksForDiv[k] * kabuData.realStocks[k].price; }
+                    if (stockVal > 0) {
+                        let dividend = Math.floor(stockVal * 0.003);
+                        if (dividend > 0) {
+                            player.money += dividend;
+                            jobMsg += `\n📈 [トレーダー] 特権: 保有資産からの配当金 ${formatNumber(dividend)} コインを獲得しました！`;
+                        }
+                    }
+                }
+
+                // 【一歩ずつ】ログイン連続日数の最高記録を保存
+                player.job_state.max_login_streak = Math.max(player.job_state.max_login_streak || 0, streak);
 
                 let startNet = calculateNetWorth(player);
                 player.daily_start_networth = startNet;
@@ -3048,6 +3198,12 @@ if (localLastResetDate !== today) {
                 }).eq('account_id', senderId);
                 
                 await sendTempMessage(roomId, `[info]🎁 デイリーボーナス！ (${streak}日連続ログイン)\n[piconname:${senderId}] 本日最初のアクションです。\n連続ログインボーナス ${formatNumber(dailyBonus)} コインを獲得！${jobMsg}[/info]`);
+
+                // 実績チェック(一歩ずつ・時は金なり)
+                await checkProgressBadge(senderId, player.job_state.max_login_streak, [3, 7, 30], '一歩ずつ', roomId);
+                if (player.job_state.interest_total) {
+                    await checkProgressBadge(senderId, player.job_state.interest_total, [100000, 500000, 1000000, 5000000], '時は金なり', roomId);
+                }
             }
 
             let myMoney = player ? player.money : 0;
@@ -3068,11 +3224,12 @@ if (localLastResetDate !== today) {
             // --- バッジ（称号）機能 ---
             if (/(^|\n)[/#]badge\b/.test(body)) {
                 let targetAid = repliedAid || senderId;
-                let badges = {};
-                try { badges = JSON.parse(fs.readFileSync(badgesFile, 'utf8')); } catch(e){}
-                let myBadges = badges[targetAid] || [];
+                let { data: bP } = await supabase.from('players').select('job_state').eq('account_id', targetAid).single();
+                let bJs = bP && typeof bP.job_state === 'string' ? JSON.parse(bP.job_state || '{}') : (bP?.job_state || {});
+                let myBadges = bJs.badges || [];
+                let completedCats = (bJs.completed_achievements || []).length;
                 let bStr = myBadges.length > 0 ? myBadges.map(b => `🎖️ ${b}`).join('\n') : "まだ称号を獲得していません。";
-                return sendTempMessage(roomId, `[info][title]🎖️ [piconname:${targetAid}] の称号一覧[/title]${bStr}[/info]`);
+                return sendTempMessage(roomId, `[info][title]🎖️ [piconname:${targetAid}] の称号一覧[/title]${bStr}\n[hr]🏆 完全制覇した実績カテゴリ: ${completedCats} 個[/info]`, 60000);
             }
 
             // --- デイリークエスト機能 ---
@@ -3104,13 +3261,15 @@ if (localLastResetDate !== today) {
                     getMoney += 10000;
                     dq.silver_claimed = true;
                     getMsg += `\n🥈 銀のデイリーボーナス (10,000 コイン) を獲得しました！`;
-                    addBadgeDB(senderId, 'クエスト見習い');
+                    addBadgeDB(senderId, 'クエスト見習い', roomId);
                 }
                 if (completedCount >= 6 && !dq.gold_claimed) {
                     getMoney += 50000;
                     dq.gold_claimed = true;
                     getMsg += `\n🥇 金のデイリーボーナス (50,000 コイン) を獲得しました！`;
-                    addBadgeDB(senderId, 'クエストマスター');
+                    // 【クエストマスター】デイリークエスト完全クリア回数
+                    js.quest_full_clear_count = (js.quest_full_clear_count || 0) + 1;
+                    await checkProgressBadge(senderId, js.quest_full_clear_count, [1, 5, 10, 30], 'クエストマスター', roomId);
                 }
 
                 if (getMoney > 0) {
@@ -3278,6 +3437,8 @@ if (localLastResetDate !== today) {
                 if (maxStreak > (js.pachinko_max_streak || 0)) {
                     js.pachinko_max_streak = maxStreak;
                     await supabase.from('players').update({ job_state: JSON.stringify(js) }).eq('account_id', senderId);
+                    // 【パチプロ】パチンコ最高連チャン回数
+                    await checkProgressBadge(senderId, maxStreak, [5, 10, 15, 20], 'パチプロ', roomId);
                 }
 
                 if (totalPayout > 0) {
@@ -3358,6 +3519,12 @@ if (localLastResetDate !== today) {
                     await addMoney(senderId, finalWin);
                     await updatePlayerStats(senderId, amt, winAmt, 'win');
                     await processButler(senderId, winAmt, roomId);
+
+                    // 【スクラッチチャンス!】スクラッチでのあたり回数
+                    let scJs = player.job_state || {};
+                    scJs.scratch_win_count = (scJs.scratch_win_count || 0) + 1;
+                    await supabase.from('players').update({ job_state: JSON.stringify(scJs) }).eq('account_id', senderId);
+                    await checkProgressBadge(senderId, scJs.scratch_win_count, [1, 5, 25, 100], 'スクラッチチャンス!', roomId);
                 } else {
                     finalMsg += `💀 ハズレ...`;
                     await updatePlayerStats(senderId, amt, 0, 'lose');
@@ -3463,6 +3630,34 @@ if (localLastResetDate !== today) {
                     player.job_state.lucky_kugi_active = true;
                     await supabase.from('players').update({ items: JSON.stringify(player.items), job_state: JSON.stringify(player.job_state) }).eq('account_id', senderId);
                     return sendTempMessage(roomId, `[info]🔨 【ラッキー釘】を使用しました！\n次回の /#pachinko で入賞率が 100% になります。[/info]`);
+                } else if (itemName === '幸運の四つ葉') {
+                    player.items[itemName]--;
+                    player.job_state.daily_item_used = true;
+                    player.job_state.clover_active = true;
+                    await supabase.from('players').update({ items: JSON.stringify(player.items), job_state: JSON.stringify(player.job_state) }).eq('account_id', senderId);
+                    return sendTempMessage(roomId, `[info]🍀 【幸運の四つ葉】を使用しました！\n次のゲームで勝利した際、配当がさらに +0.3倍 されます。[/info]`);
+                } else if (itemName === '保険証書') {
+                    player.items[itemName]--;
+                    player.job_state.daily_item_used = true;
+                    player.job_state.insurance_active = true;
+                    await supabase.from('players').update({ items: JSON.stringify(player.items), job_state: JSON.stringify(player.job_state) }).eq('account_id', senderId);
+                    return sendTempMessage(roomId, `[info]📄 【保険証書】を使用しました！\n次のゲームで敗北した場合、賭け金の30%が返還されます。[/info]`);
+                } else if (itemName === '残業チケット') {
+                    player.items[itemName]--;
+                    player.job_state.daily_item_used = true;
+                    await supabase.from('players').update({ items: JSON.stringify(player.items), job_state: JSON.stringify(player.job_state), work_limit: (player.work_limit || 0) + 3 }).eq('account_id', senderId);
+                    return sendTempMessage(roomId, `[info]📝 【残業チケット】を使用しました！\n/#work の残り回数が +3 回復しました！[/info]`);
+                } else if (itemName === '逆転の護符') {
+                    player.items[itemName]--;
+                    player.job_state.daily_item_used = true;
+                    if (Math.random() < 0.3) {
+                        player.job_state.dealer_weakness_active = true;
+                        await supabase.from('players').update({ items: JSON.stringify(player.items), job_state: JSON.stringify(player.job_state) }).eq('account_id', senderId);
+                        return sendTempMessage(roomId, `[info]🔮 【逆転の護符】の使用に成功した！\n次のゲームで敗北した際、負けを無効化し引き分けにします。[/info]`);
+                    } else {
+                        await supabase.from('players').update({ items: JSON.stringify(player.items), job_state: JSON.stringify(player.job_state) }).eq('account_id', senderId);
+                        return sendTempMessage(roomId, `[info]💦 【逆転の護符】を使用したが、効果がなかった... (アイテムは消費されました)[/info]`);
+                    }
                 } else {
                     return sendTempMessage(roomId, `[info]⚠️ そのアイテムは /#use コマンドで手動使用するものではありません。[/info]`);
                 }
@@ -3476,7 +3671,11 @@ if (localLastResetDate !== today) {
 ・ジョーカーの招待状 (30万): /#joker [aid] で指定。相手が次に勝った際、配当の10〜20%を横取りする
 ・ダブルアップ・コイン (10万): /#use でコイントスが始まり表裏を予測。次勝った時当たれば配当2倍
 ・目眩し弾薬 (5万): /#use で使うと、自分を狙っている賞金稼ぎやジョーカーのターゲット設定を強制解除する
-・ラッキー釘 (5万): /#use で使うと、次回のパチンコの入賞率が100%になる[/info]`;
+・ラッキー釘 (5万): /#use で使うと、次回のパチンコの入賞率が100%になる
+・幸運の四つ葉 (15万): /#use で使うと、次に勝利した際の配当がさらに +0.3倍される
+・保険証書 (20万): /#use で使うと、次に敗北した際に賭け金の30%が返還される
+・残業チケット (8万): /#use で使うと、/#work の残り回数が即座に+3回復する
+・逆転の護符 (30万): /#use で使うと30%成功。次の負けを無効化し引き分けにする(ディーラーの弱みの廉価版)[/info]`;
                 return sendTempMessage(roomId, msg);
             }
 
@@ -3507,7 +3706,11 @@ if (localLastResetDate !== today) {
                     'ダブルアップ・コイン': 100000,
                     '目眩し弾薬': 50000,
                     'ラッキー釘': 50000,
-                    '黄金の招き猫': 3000000
+                    '黄金の招き猫': 3000000,
+                    '幸運の四つ葉': 150000,
+                    '保険証書': 200000,
+                    '残業チケット': 80000,
+                    '逆転の護符': 300000
                 };
                 let cost = prices[itemName];
                 if (!cost) return sendTempMessage(roomId, `[info]⚠️ そのアイテムは存在しません。[/info]`);
@@ -3810,8 +4013,12 @@ if (localLastResetDate !== today) {
                         if (myMoney < cost) return sendTempMessage(roomId, `[info]⚠️ 所持金が足りません。(必要: ${formatNumber(cost)} コイン)[/info]`);
                         
                         kabuData.totalIssued += cnt;
+                        let newKabuOwned = (player.kabu_owned || 0) + cnt;
                         await supabase.from('config').upsert({ key: 'kabu_data', value: JSON.stringify(kabuData) });
-                        await supabase.from('players').update({ money: myMoney - cost, kabu_owned: (player.kabu_owned || 0) + cnt }).eq('account_id', senderId);
+                        await supabase.from('players').update({ money: myMoney - cost, kabu_owned: newKabuOwned }).eq('account_id', senderId);
+
+                        // 【大株主】株式保有総数
+                        await checkProgressBadge(senderId, getTotalStockCount(newKabuOwned, player.stocks), [100, 300, 500, 1000], '大株主', roomId);
                         
                         return sendTempMessage(roomId, `[info]📈 [piconname:${senderId}]\n${kName}を ${cnt} 株購入しました。(-${formatNumber(cost)} コイン)[/info]`);
                     } else if (realStockTickers[kName]) {
@@ -3829,6 +4036,9 @@ if (localLastResetDate !== today) {
                         let myStocks = player.stocks ? JSON.parse(player.stocks) : {};
                         myStocks[kName] = (myStocks[kName] || 0) + cnt;
                         await supabase.from('players').update({ money: myMoney - cost, stocks: JSON.stringify(myStocks) }).eq('account_id', senderId);
+
+                        // 【大株主】株式保有総数
+                        await checkProgressBadge(senderId, getTotalStockCount(player.kabu_owned, myStocks), [100, 300, 500, 1000], '大株主', roomId);
                         
                         return sendTempMessage(roomId, `[info]📈 [piconname:${senderId}]\n${kName}を ${cnt} 株購入しました。(-${formatNumber(cost)} コイン)[/info]`);
                     } else {
@@ -4170,13 +4380,14 @@ if (localLastResetDate !== today) {
                 return sendTempMessage(roomId, `[info][title]📊 プレイヤー情報[/title][piconname:${targetAid}] 様 (最終ログイン: ${lastLoginStr})\n\n💰 所持金: ${formatNumber(tMoney)} コイン${bStr}${kabuStr}\n💎 純資産: ${formatNumber(netWorth)} コイン${streakStr}${pStreakStr}${statsStr}${drtpStr}\n[hr]👔 職業: ${tJob}\n🎰 スロット残り: ${remSlot} 回\n💼 お仕事残り: ${targetPlayer.work_limit || 0} 回\n⛩️ 今日の運勢: ${targetPlayer.omikuji_result || '未引'}${targetMsg}${itemStr}\n[hr]※1分後に自動消去されます[/info]`);
             }
 
-            const cJobMatch = body.match(/(^|\n)[/#]job\s+(サラリーマン|公務員|警察官|プロスポーツ選手|賭博師|ギャンブルオーナー|未来人|逆転のギャンブラー|銀行員|大富豪の執事|賞金稼ぎ|数学者|パチプロ|てんびん|隻眼)/);
+            const cJobMatch = body.match(/(^|\n)[/#]job\s+(サラリーマン|公務員|警察官|プロスポーツ選手|賭博師|ギャンブルオーナー|未来人|逆転のギャンブラー|銀行員|大富豪の執事|賞金稼ぎ|数学者|パチプロ|てんびん|隻眼|トレーダー|保険屋)/);
             if (cJobMatch && gambleActive) {
                 const jn = cJobMatch[2]; const cs = {
                     'サラリーマン': 0, '公務員': 2000, '警察官': 3000, 'プロスポーツ選手': 5000, 
                     '賭博師': 200000, 'ギャンブルオーナー': 1000000, '未来人': 5000000,
                     '逆転のギャンブラー': 1000000, '銀行員': 1000000, '大富豪の執事': 400000,
-                    '賞金稼ぎ': 10000, '数学者': 50000, 'パチプロ': 50000, 'てんびん': 200000, '隻眼': 400000
+                    '賞金稼ぎ': 10000, '数学者': 50000, 'パチプロ': 50000, 'てんびん': 200000, '隻眼': 400000,
+                    'トレーダー': 600000, '保険屋': 800000
                 };
                 if (myJob === jn) return sendTempMessage(roomId, `[info]⚠️ ${makeReplyTag(senderId, roomId, msgId)}\nすでに ${jn} に就いています！[/info]`);
                 if (myMoney < cs[jn]) return sendTempMessage(roomId, `[info]⚠️ ${makeReplyTag(senderId, roomId, msgId)}\nお金が足りません！(転職費用: ${formatNumber(cs[jn])} コイン)[/info]`);
@@ -4193,12 +4404,14 @@ if (localLastResetDate !== today) {
 🎰 パチプロ (費用: 50,000)\n ▶ パチンコ遊技時の釘の入賞率が 5% から 7% に上がる
 🎰 賭博師 (費用: 200,000)\n ▶ 毎日初回ログイン時にスロット回数が自動で5〜10回分増加
 ⚖️ てんびん (費用: 200,000)\n ▶ /#tenbin (1日1回、2択ゲームの勝率が30~50%UP。10%で逆に傾く)
+📈 トレーダー (費用: 600,000)\n ▶ /#work (800〜2500)\n ▶ 毎日初回ログイン時、保有株の評価額の0.3%を配当金として自動獲得
 👁️‍🗨️ 隻眼 (費用: 400,000)\n ▶ /#sekigan (1日1回、最初の手札/ダイスが見えなくなるが配当+1倍)
 👑 ギャンブルオーナー (費用: 1,000,000)\n ▶ /#owner (1日1回、30分間他人のギャンブル負け金の50%を50%で回収)
 👁️ 未来人 (費用: 5,000,000)\n ▶ /#next-future (1日1回、70%の確率で現在進行中のゲームの未来を予知)
 🔄 逆転のギャンブラー (費用: 1,000,000)\n ▶ デイリーRTPが低いと、ギャンブルに負けた時80%の確率で賭け金が戻ってくる
 🏦 銀行員 (費用: 1,000,000)\n ▶ 毎日初回ログイン時に、銀行の預金に1%の複利利息が付与される
 🎩 大富豪の執事 (費用: 400,000)\n ▶ ランキング1位か2位の人が稼ぐ度に、その利益の0.1%を給与として得る
+🛡️ 保険屋 (費用: 800,000)\n ▶ /#work (900〜2200)\n ▶ 自身がギャンブルで負けた際、常に負け金の20%が自動的に返還される
 [hr]※転職コマンド: /#job 役職名[/info]`);
             }
 
@@ -4236,14 +4449,15 @@ if (localLastResetDate !== today) {
                 else if(myJob === 'パチプロ'){ e=Math.floor(Math.random()*1501)+500; m=`優良台のデータを取り、 ${formatNumber(e)} コイン稼ぎました！🎰`; }
                 else if(myJob === 'てんびん'){ e=Math.floor(Math.random()*1501)+1000; m=`人々の運命を計り、 ${formatNumber(e)} コイン稼ぎました！⚖️`; }
                 else if(myJob === '隻眼'){ e=Math.floor(Math.random()*2001)+1000; m=`裏社会の闇に紛れ、 ${formatNumber(e)} コイン稼ぎました！👁️‍🗨️`; }
+                else if(myJob === 'トレーダー'){ e=Math.floor(Math.random()*1701)+800; m=`市場を分析し、 ${formatNumber(e)} コイン稼ぎました！📈`; }
+                else if(myJob === '保険屋'){ e=Math.floor(Math.random()*1301)+900; m=`保険契約をまとめ、 ${formatNumber(e)} コイン稼ぎました！🛡️`; }
                 let js = player.job_state || {};
-js.work_total = (js.work_total || 0) + 1;
-await supabase.from('players').update({ job_state: JSON.stringify(js) }).eq('account_id', senderId);
+                js.work_total = (js.work_total || 0) + 1;
 
-// バッジチェック (10, 50, 100, 500回)
-await checkProgressBadge(senderId, js.work_total, [1, 50, 100, 500], '働き者', roomId);
+                await supabase.from('players').update({ last_work_time: Date.now(), work_limit: player.work_limit - 1, job_state: JSON.stringify(js) }).eq('account_id', senderId);
 
-                await supabase.from('players').update({ last_work_time: Date.now(), work_limit: player.work_limit - 1 }).eq('account_id', senderId);
+                // 【働き者】実績チェック (10, 50, 100, 500回)
+                await checkProgressBadge(senderId, js.work_total, [10, 50, 100, 500], '働き者', roomId);
                 await addMoney(senderId, e); 
                 await updateQuest(senderId, 'work_count', 1);
                 // /#work の処理の最後に追加
@@ -4259,9 +4473,14 @@ await checkProgressBadge(senderId, js.work_total, [1, 50, 100, 500], '働き者'
                 if (bet < 500) return sendTempMessage(roomId, `[info]⚠️ 最低賭け金は 500 コインです。[/info]`);
                 
                 if (bet > 0 && myMoney >= bet) {
-                    let updates = { money: myMoney - bet, slot_count: player.slot_count + 1, last_slot_time: Date.now() };
+                    let slotJs = player.job_state || {};
+                    slotJs.slot_play_count = (slotJs.slot_play_count || 0) + 1;
+                    let updates = { money: myMoney - bet, slot_count: player.slot_count + 1, last_slot_time: Date.now(), job_state: JSON.stringify(slotJs) };
                     await supabase.from('players').update(updates).eq('account_id', senderId);
                     
+                    // 【賭博師】/#slot 実行回数
+                    await checkProgressBadge(senderId, slotJs.slot_play_count, [5, 10, 25, 50, 100, 500], '賭博師', roomId);
+
                     await updateQuest(senderId, 'slot_count', 1);
 
                     let r = Math.random() * 100, omi = (player.omikuji_date === today) ? player.omikuji_result : null, oM = "";
@@ -4280,7 +4499,7 @@ await checkProgressBadge(senderId, js.work_total, [1, 50, 100, 500], '働き者'
                     else { ml=0; let o=["🍉","🍋","🔔","🍇","7️⃣","6️⃣","5️⃣","[picon:10870480]","[picon:10643538]",":)"]; let r1=o[Math.floor(Math.random()*o.length)], r2=o[Math.floor(Math.random()*o.length)], r3=o[Math.floor(Math.random()*o.length)]; while(r1===r2&&r2===r3) r3=o[Math.floor(Math.random()*o.length)]; sy=`${r1} | ${r2} | ${r3}`; res="💀 はずれ..."; }
                     
                     if (ml > 0) {
-                        let buffRes = await processBuffs(senderId, true, false, false, ml, res);
+                        let buffRes = await processBuffs(senderId, true, false, false, ml, res, bet);
                         ml = buffRes.mult;
                         res = buffRes.resTxt;
                     }
@@ -4497,6 +4716,7 @@ await checkProgressBadge(senderId, js.work_total, [1, 50, 100, 500], '働き者'
                             let h = bM[3]; if (!h || !['high','low'].includes(h.toLowerCase())) return sendTempMessage(roomId, `[info]⚠️ 予想(high/low)を指定してください\n例: /#bet 500 high[/info]`); pl.choice = h.toLowerCase();
                         }
                         pl.bet = b; 
+                        pl.usedMax = (betType === 'max');
                         let updates = { money: myMoney - b };
                         await supabase.from('players').update(updates).eq('account_id', senderId);
                         sendTempMessage(roomId, `[info]💰 [piconname:${senderId}] ${formatNumber(b)} コインをベットしました！[/info]`);
@@ -4740,6 +4960,14 @@ await checkProgressBadge(senderId, js.work_total, [1, 50, 100, 500], '働き者'
                             desc = `確定手札: ${pl.hand.map(c => c.suit + c.rank).join(' ')} (${getPokerRank(pl.hand).name})`;
                         } else if (g.type === 'yacht') {
                             desc = `確定サイコロ: ${pl.dice.map(d => `🎲${d}`).join(' ')} (${getYachtRank(pl.dice).name})`;
+                            // 【ラッキー！】振り直しを2回せず、自動スタンドされる前に自分でスタンドした回数
+                            if ((pl.rolls || 0) < 2) {
+                                let { data: lJs } = await supabase.from('players').select('job_state').eq('account_id', pl.aid).single();
+                                let js4 = lJs && typeof lJs.job_state === 'string' ? JSON.parse(lJs.job_state || '{}') : (lJs?.job_state || {});
+                                js4.yacht_manual_stand = (js4.yacht_manual_stand || 0) + 1;
+                                await supabase.from('players').update({ job_state: JSON.stringify(js4) }).eq('account_id', pl.aid);
+                                await checkProgressBadge(pl.aid, js4.yacht_manual_stand, [5, 10, 25, 50], 'ラッキー！', roomId);
+                            }
                         } else {
                             desc = `スコア: ${calculateBJScore(pl.hand)}`;
                         }
