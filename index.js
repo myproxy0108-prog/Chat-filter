@@ -1834,7 +1834,9 @@ const proceedBotButaTurn = async (roomId) => {
 
 const proceedBotChinchiroTurn = async (roomId) => {
     let game = gameState[roomId];
-    if (!game) return;
+    if (!game || game.botTurnStarted) return;
+    game.botTurnStarted = true; // 多重呼び出し防止(念のための二重ガード)
+    clearTimeout(game.timeoutId);
     await sendMessage(roomId, `[info][ディーラー] のターンです。[/info]`);
     await sleep(1500);
     await sendMessage(roomId, `/#roll`);
@@ -1859,6 +1861,9 @@ const proceedBotChinchiroTurn = async (roomId) => {
 
 const proceedBotChouhan = async (roomId) => {
     let game = gameState[roomId];
+    if (!game || game.botTurnStarted) return;
+    game.botTurnStarted = true; // 多重呼び出し防止(念のための二重ガード)
+    clearTimeout(game.timeoutId);
     await sendMessage(roomId, `/#roll`);
     await sleep(1000);
     let msgRes = await chatworkClient.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(`[info]🎲 [ディーラー] 壺を振っています... [ ? ] [ ? ][/info]`)}`);
@@ -5262,8 +5267,8 @@ if (localLastResetDate !== today) {
                 let g = gameState[roomId];
                 if (g.type === 'cc') {
                     let pl = g.players.find(x => x.aid === senderId);
-                    if (pl && !pl.res) {
-                        pl.res = { pending: true }; // 連打による多重ロールを防止するロック
+                    if (pl && !pl.res && !pl.rolling) {
+                        pl.rolling = true; // 連打による多重ロールを防止するロック(resとは別フィールドにする。resを仮の値にすると他プレイヤーの「全員ロール完了」判定が誤って早期成立してしまうため)
                         let msgRes = await chatworkClient.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(`[info]🎲 [piconname:${senderId}] サイコロを振っています...[/info]`)}`);
                         if (msgRes && msgRes.data) {
                             let mId = msgRes.data.message_id;
