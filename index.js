@@ -5063,7 +5063,7 @@ if (localLastResetDate !== today) {
             }
 
             // --- 管理者専用: 特殊役職の付与コマンド (通常の/#jobでは絶対に就けない役職を付与する) ---
-            const giveJobMatch = body.match(/(^|\n)[/#]givejob\s+(たかしくん|てつやくん)/);
+            const giveJobMatch = body.match(/(^|\n)[/#]givejob\s+(エボリューショナー|たかしくん|てつやくん)/);
             if (giveJobMatch) {
                 if (!(await isUserAdmin(roomId, senderId))) {
                     return sendTempMessage(roomId, `[info]⚠️ このコマンドは管理者専用です。[/info]`);
