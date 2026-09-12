@@ -22,7 +22,7 @@ const daifugoRooms = {};
 let BOT_ACCOUNT_ID = null;
 let lastActiveRoomId = null;
 
-let ownerSkill = { aid: null, expire: 0, evoBoost: false, rate: 0.5 };
+let ownerSkill = { aid: null, expire: 0, evoBoost: false, rate: 0.3, selfRefund: 0 };
 const activePachinko = {};
 const activeScratch = {};
 
@@ -784,13 +784,21 @@ const processOwnerSkill = async (loserAid, lostAmount, roomId) => {
     let excluded = await getExcludedAids();
     if (ownerSkill.expire > now && ownerSkill.aid && ownerSkill.aid !== loserAid.toString()) {
         if (excluded.includes(ownerSkill.aid.toString())) return; // ランキング外は発動不可
-        let rate = ownerSkill.rate || 0.5;
+        let rate = ownerSkill.rate || 0.3;
         if (Math.random() < rate) { 
             let stealAmount = Math.floor(lostAmount * rate); 
             if (stealAmount > 0) {
                 await addMoney(ownerSkill.aid, stealAmount);
                 sendMessage(roomId, `[info]👑 ギャンブルオーナーの不労所得！\n[piconname:${ownerSkill.aid}] が [piconname:${loserAid}] の負け金から ${formatNumber(stealAmount)} コインを回収しました。[/info]`);
             }
+        }
+    }
+    // 【運命の胴元】(未来人×ギャンブルオーナー): オーナー本人が負けた場合でも、未来視の力で一部を取り戻せる
+    if (ownerSkill.expire > now && ownerSkill.aid && ownerSkill.aid === loserAid.toString() && ownerSkill.selfRefund) {
+        let refund = Math.floor(lostAmount * ownerSkill.selfRefund);
+        if (refund > 0) {
+            await addMoney(loserAid, refund);
+            sendMessage(roomId, `[info]🔮👑 【運命の胴元】の力で、自らの負け金の一部 ${formatNumber(refund)} コインを未来から取り戻した！[/info]`);
         }
     }
 };
@@ -2557,10 +2565,16 @@ const resolveChouhan = async (roomId, mId) => {
             let tenbinEvoBonus = js.evo_boost_tenbin_bonus || 0;
 
 
+            let tenbinCounterFate = !!js.evo_counter_fate;
+
+
+            if (tenbinCounterFate) js.evo_counter_fate = false;
+
+
             await supabase.from('players').update({ job_state: JSON.stringify(js) }).eq('account_id', player.aid);
 
             
-            if (Math.random() < 0.1) {
+            if (!tenbinCounterFate && Math.random() < 0.1) {
                 result = player.choice === 'chou' ? 'han' : 'chou'; 
             } else {
                 let prob = 0.3 + Math.random() * 0.2 + tenbinEvoBonus;
@@ -2668,11 +2682,17 @@ const resolveSicbo = async (roomId, mId) => {
 
                 let tenbinEvoBonus = js.evo_boost_tenbin_bonus || 0;
 
+
+                let tenbinCounterFate = !!js.evo_counter_fate;
+
+
+                if (tenbinCounterFate) js.evo_counter_fate = false;
+
     
                 await supabase.from('players').update({ job_state: JSON.stringify(js) }).eq('account_id', player.aid);
 
                 
-                if (Math.random() < 0.1) {
+                if (!tenbinCounterFate && Math.random() < 0.1) {
                     resultType = player.choice === 'dai' ? 'shou' : 'dai'; 
                 } else {
                     let prob = 0.3 + Math.random() * 0.2 + tenbinEvoBonus;
@@ -2791,11 +2811,17 @@ const resolveRoulette = async (roomId, resultNum) => {
 
                 let tenbinEvoBonus = js.evo_boost_tenbin_bonus || 0;
 
+
+                let tenbinCounterFate = !!js.evo_counter_fate;
+
+
+                if (tenbinCounterFate) js.evo_counter_fate = false;
+
     
                 await supabase.from('players').update({ job_state: JSON.stringify(js) }).eq('account_id', player.aid);
 
                 
-                if (Math.random() < 0.1) {
+                if (!tenbinCounterFate && Math.random() < 0.1) {
                     props[player.choice] = false; 
                 } else {
                     let prob = 0.3 + Math.random() * 0.2 + tenbinEvoBonus;
@@ -3089,11 +3115,17 @@ const resolveHighLow = async (roomId, mId) => {
 
                 let tenbinEvoBonus = js.evo_boost_tenbin_bonus || 0;
 
+
+                let tenbinCounterFate = !!js.evo_counter_fate;
+
+
+                if (tenbinCounterFate) js.evo_counter_fate = false;
+
     
                 await supabase.from('players').update({ job_state: JSON.stringify(js) }).eq('account_id', player.aid);
 
                 
-                if (Math.random() < 0.1) {
+                if (!tenbinCounterFate && Math.random() < 0.1) {
                     result = player.choice === 'high' ? 'low' : 'high'; 
                 } else {
                     let prob = 0.3 + Math.random() * 0.2 + tenbinEvoBonus;
@@ -3549,6 +3581,7 @@ if (localLastResetDate !== today) {
                 player.job_state.evo_tenbin_max_uses = 0;
                 player.job_state.evo_boost_sekigan_bonus = 0;
                 player.job_state.evo_boost_bounty_pct = 0;
+                player.job_state.evo_counter_fate = false;
                 player.job_state.daily_quests = { work_count: 0, slot_count: 0, table_win_count: 0, silver_claimed: false, gold_claimed: false };
                 
                 if (player.job_state.daily_blackmarket_found) {
@@ -4991,7 +5024,7 @@ if (localLastResetDate !== today) {
 🔮 占い師 (費用: 700,000)\n ▶ 毎日初回ログイン時、まだ見つけていない実績のヒントを必ず1つ発見できる
 📈 トレーダー (費用: 600,000)\n ▶ /#work (800〜2500)\n ▶ 毎日初回ログイン時、保有株の評価額の0.3%を配当金として自動獲得
 👁️‍🗨️ 隻眼 (費用: 400,000)\n ▶ /#sekigan (1日1回、最初の手札/ダイスが見えなくなるが配当+1倍)
-👑 ギャンブルオーナー (費用: 1,000,000)\n ▶ /#owner (1日1回、30分間他人のギャンブル負け金の50%を50%で回収)
+👑 ギャンブルオーナー (費用: 1,000,000)\n ▶ /#owner (1日1回、30分間他人のギャンブル負け金の30%を30%の確率で回収)
 👁️ 未来人 (費用: 5,000,000)\n ▶ /#next-future (1日1回、70%の確率で現在進行中のゲームの未来を予知)
 🔄 逆転のギャンブラー (費用: 1,000,000)\n ▶ デイリーRTPが低いと、ギャンブルに負けた時80%の確率で賭け金が戻ってくる
 🏦 銀行員 (費用: 1,000,000)\n ▶ 毎日初回ログイン時に、銀行の預金に1%の複利利息が付与される
@@ -5006,12 +5039,11 @@ if (localLastResetDate !== today) {
             const evolveMatch = body.match(/(^|\n)[/#]evolve\s+(\S+)\s+(\S+)/);
             if (evolveMatch && gambleActive) {
                 if (myJob !== 'エボリューショナー') return sendTempMessage(roomId, `[info]⚠️ エボリューショナー専用のコマンドです。[/info]`);
-                if (player.job_state.evo_used_date === today) return sendTempMessage(roomId, `[info]⚠️ 本日はもう発動済みです。(1日1回まで)[/info]`);
 
                 // アクティブ系(コマンドを強化・通常倍率): 既存のコマンドの効果が本日中に強化される
                 const EVO_ACTIVE_BOOSTS = {
                     '未来人': { desc: '/#next-future の使用可能回数が1回→3回に強化', apply: (ts) => { ts.evo_boost_future_uses = 3; } },
-                    'ギャンブルオーナー': { desc: '/#owner の発動時間が30分→60分、回収率が50%→70%に強化', apply: (ts) => { ts.evo_boost_owner_minutes = 60; ts.evo_boost_owner_rate = 0.7; } },
+                    'ギャンブルオーナー': { desc: '/#owner の発動時間が30分→45分、回収率が30%→40%に強化', apply: (ts) => { ts.evo_boost_owner_minutes = 45; ts.evo_boost_owner_rate = 0.4; } },
                     'てんびん': { desc: '/#tenbin の勝率上昇量が強化される', apply: (ts) => { ts.evo_boost_tenbin_bonus = 0.2; } },
                     '隻眼': { desc: '/#sekigan の配当上昇が+1.0倍→+2.0倍に強化', apply: (ts) => { ts.evo_boost_sekigan_bonus = 2.0; } },
                     '賞金稼ぎ': { desc: '/#bounty の奪取率が10%→20%に強化', apply: (ts) => { ts.evo_boost_bounty_pct = 0.2; } },
@@ -5045,18 +5077,17 @@ if (localLastResetDate !== today) {
                 };
                 const EVO_BEST_MATCHES = [
                     { pair: ['賭博師', '未来人'], name: '予言ギャンブラー', apply: async (aid, ts) => {
-                        ts.evo_boost_future_uses = 3;
+                        ts.evo_boost_future_accuracy = 1.0; // 次の未来視の的中率が100%に(回数は通常通り1回)
                         let add = Math.floor(Math.random()*6)+15;
                         let { data: sp } = await supabase.from('players').select('slot_count').eq('account_id', aid).single();
                         await supabase.from('players').update({ slot_count: Math.max(0, (sp.slot_count||0) - add) }).eq('account_id', aid);
-                        return `👁️ /#next-future が本日3回まで使用可能に！ ＋ スロット/パチンコ回数が${add}回分お得に！`;
+                        return `🔮 次に使う /#next-future の的中率が100%に！ ＋ スロット/パチンコ回数が${add}回分お得に！`;
                     }},
                     { pair: ['未来人', 'てんびん'], name: '運命の絶対視', apply: async (aid, ts) => {
-                        ts.evo_boost_future_uses = 3;
-                        ts.evo_boost_future_accuracy = 0.95;
-                        ts.evo_boost_tenbin_bonus = 0.35;
-                        ts.evo_tenbin_max_uses = 2;
-                        return `👁️ /#next-future の的中率が95%に！ ＋ /#tenbin が本日2回まで使用可能・上昇量も大幅強化！`;
+                        ts.tenbin_active = true;
+                        ts.evo_boost_tenbin_bonus = 0.7;
+                        ts.evo_counter_fate = true; // てんびん特有の「1割で逆に傾く」リスクを、未来視で見切って完全に無効化する
+                        return `👁️⚖️ 未来を見切り、運命が反転しようとする瞬間を先読みした！天秤の力でその反転そのものを叩き潰し、次の2択ゲーム(丁半/サイコロ/ルーレット/ハイロー)に完全勝利する！`;
                     }},
                     { pair: ['隻眼', '賞金稼ぎ'], name: '暗殺者の目', apply: async (aid, ts) => {
                         ts.evo_boost_sekigan_bonus = 3.0;
@@ -5064,10 +5095,10 @@ if (localLastResetDate !== today) {
                         return `👁️‍🗨️ /#sekigan の配当上昇が+3.0倍に！ ＋ /#bounty の奪取率が30%に強化！`;
                     }},
                     { pair: ['ギャンブルオーナー', '保険屋'], name: '胴元の慈悲', apply: async (aid, ts) => {
-                        ts.evo_boost_owner_minutes = 90;
-                        ts.evo_boost_owner_rate = 0.8;
-                        await addMoney(aid, 300000);
-                        return `👑 /#owner が90分間・回収率80%に強化！ ＋ 保険料からの上納金 300,000 コイン！`;
+                        ts.evo_boost_owner_minutes = 50;
+                        ts.evo_boost_owner_rate = 0.45;
+                        await addMoney(aid, 100000);
+                        return `👑 /#owner が50分間・回収率45%に強化！ ＋ 保険料からの上納金 100,000 コイン！`;
                     }},
                     { pair: ['逆転のギャンブラー', 'てんびん'], name: '大逆転劇場', apply: async (aid, ts) => {
                         ts.evo_boost_tenbin_bonus = 0.3;
@@ -5124,10 +5155,10 @@ if (localLastResetDate !== today) {
                         return `🚓 /#bounty の奪取率が25%に強化！ ＋ 捜査協力金 150,000 コイン！`;
                     }},
                     { pair: ['プロスポーツ選手', 'ギャンブルオーナー'], name: '一攫千金の覇者', apply: async (aid, ts) => {
-                        ts.evo_boost_owner_minutes = 75;
-                        ts.evo_boost_owner_rate = 0.65;
-                        await addMoney(aid, 200000);
-                        return `⚽ /#owner が75分間・回収率65%に強化！ ＋ スポンサー契約金 200,000 コイン！`;
+                        ts.evo_boost_owner_minutes = 45;
+                        ts.evo_boost_owner_rate = 0.4;
+                        await addMoney(aid, 80000);
+                        return `⚽ /#owner が45分間・回収率40%に強化！ ＋ スポンサー契約金 80,000 コイン！`;
                     }},
                     { pair: ['サラリーマン', '銀行員'], name: '堅実な資産形成', apply: async (aid, ts) => {
                         let { data: bp } = await supabase.from('players').select('bank').eq('account_id', aid).single();
@@ -5146,6 +5177,12 @@ if (localLastResetDate !== today) {
                         ts.evo_boost_sekigan_bonus = 2.5;
                         return `⚖️ /#tenbin が本日2回まで使用可能・上昇量も強化！ ＋ 👁️‍🗨️ /#sekigan の配当上昇が+2.5倍に！`;
                     }},
+                    { pair: ['未来人', 'ギャンブルオーナー'], name: '運命の胴元', apply: async (aid, ts) => {
+                        ts.evo_boost_owner_minutes = 40;
+                        ts.evo_boost_owner_rate = 0.35;
+                        ts.evo_boost_owner_self_refund = 0.25;
+                        return `🔮👑 /#owner 発動中は他人から回収できるだけでなく、自分自身が負けても未来視の力で負け金の25%を確実に取り戻せるように！(40分間・回収率35%)`;
+                    }},
                 ];
 
                 let j1 = evolveMatch[2], j2 = evolveMatch[3];
@@ -5153,8 +5190,22 @@ if (localLastResetDate !== today) {
                     return sendTempMessage(roomId, `[info]⚠️ 有効な役職を2つ、別々に指定してください。\n例: /#evolve 賭博師 未来人\n\n選べる役職:\n${EVO_VALID_JOBS.join(' / ')}[/info]`);
                 }
 
-                let ts = player.job_state;
-                ts.evo_used_date = today;
+                // アカウント単位でロック＋再取得し、連続実行による1日複数回発動を防止(先に今日の分を予約する)
+                let evolveGateOk = true;
+                let ts;
+                await withBadgeLock(senderId, async () => {
+                    let { data: ep } = await supabase.from('players').select('job_state').eq('account_id', senderId).single();
+                    ts = ep && typeof ep.job_state === 'string' ? JSON.parse(ep.job_state || '{}') : (ep?.job_state || {});
+                    if (ts.evo_used_date === today) {
+                        evolveGateOk = false;
+                        return;
+                    }
+                    ts.evo_used_date = today;
+                    await supabase.from('players').update({ job_state: JSON.stringify(ts) }).eq('account_id', senderId);
+                });
+
+                if (!evolveGateOk) return sendTempMessage(roomId, `[info]⚠️ 本日はもう発動済みです。(1日1回まで)[/info]`);
+
                 ts.evo_combo = [j1, j2];
                 let resultMsg = "";
 
@@ -5231,20 +5282,24 @@ if (localLastResetDate !== today) {
                     else return sendTempMessage(roomId, `[info]⚠️ 現在、他のギャンブルオーナーが能力を発動中です。しばらくお待ちください。[/info]`);
                 }
                 let ownerMinutes = player.job_state.evo_boost_owner_minutes || 30;
-                let ownerRate = player.job_state.evo_boost_owner_rate || 0.5;
-                let ownerBoosted = ownerMinutes > 30;
+                let ownerRate = player.job_state.evo_boost_owner_rate || 0.3;
+                let ownerSelfRefund = player.job_state.evo_boost_owner_self_refund || 0;
+                let ownerBoosted = ownerMinutes > 30 || ownerSelfRefund > 0;
                 ownerSkill.aid = senderId;
                 ownerSkill.expire = now + ownerMinutes * 60 * 1000;
                 ownerSkill.evoBoost = ownerBoosted;
                 ownerSkill.rate = ownerRate;
+                ownerSkill.selfRefund = ownerSelfRefund;
                 let ownerUpdates = { skill_date: today };
                 if (ownerBoosted) {
                     player.job_state.evo_boost_owner_minutes = 0;
                     player.job_state.evo_boost_owner_rate = 0;
+                    player.job_state.evo_boost_owner_self_refund = 0;
                     ownerUpdates.job_state = JSON.stringify(player.job_state);
                 }
                 await supabase.from('players').update(ownerUpdates).eq('account_id', senderId);
-                return sendTempMessage(roomId, `[info][title]👑 オーナー権限発動[/title][piconname:${senderId}]\nここから${ownerMinutes}分間、他人がギャンブルで負けた金額の${Math.round(ownerRate*100)}%を${Math.round(ownerRate*100)}%の確率で回収します...！${ownerBoosted ? ' (エボリューション強化！)' : ''}[/info]`);
+                let selfRefundMsg = ownerSelfRefund > 0 ? `\n🔮 さらに自分自身が負けた場合も、負け金の${Math.round(ownerSelfRefund*100)}%を取り戻せます！` : '';
+                return sendTempMessage(roomId, `[info][title]👑 オーナー権限発動[/title][piconname:${senderId}]\nここから${ownerMinutes}分間、他人がギャンブルで負けた金額の${Math.round(ownerRate*100)}%を${Math.round(ownerRate*100)}%の確率で回収します...！${selfRefundMsg}${ownerBoosted ? ' (エボリューション強化！)' : ''}[/info]`);
             }
 
             if (/(^|\n)[/#]work\b/.test(body) && gambleActive) {
