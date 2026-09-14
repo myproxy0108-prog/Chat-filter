@@ -101,6 +101,11 @@ const sendMessage = async (roomId, text) => {
     try { await chatworkClient.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(text)}`); } catch(e){}
 };
 
+// 本人の結果メッセージより先に「ネタバレ」的な通知が表示されてしまうのを防ぐため、少し遅らせて送信する
+const delayedSendMessage = (roomId, text, delayMs = 800) => {
+    setTimeout(() => { sendMessage(roomId, text); }, delayMs);
+};
+
 const sendTempMessage = async (roomId, text, ms = 60000) => {
     try {
         const res = await chatworkClient.post(`/rooms/${roomId}/messages`, `body=${encodeURIComponent(text)}`);
@@ -789,7 +794,8 @@ const processOwnerSkill = async (loserAid, lostAmount, roomId) => {
             let stealAmount = Math.floor(lostAmount * rate); 
             if (stealAmount > 0) {
                 await addMoney(ownerSkill.aid, stealAmount);
-                sendMessage(roomId, `[info]👑 ギャンブルオーナーの不労所得！\n[piconname:${ownerSkill.aid}] が [piconname:${loserAid}] の負け金から ${formatNumber(stealAmount)} コインを回収しました。[/info]`);
+                // 本人の結果メッセージより先にネタバレしないよう、少し遅らせて通知する
+                delayedSendMessage(roomId, `[info]👑 ギャンブルオーナーの不労所得！\n[piconname:${ownerSkill.aid}] が [piconname:${loserAid}] の負け金から ${formatNumber(stealAmount)} コインを回収しました。[/info]`);
             }
         }
     }
@@ -798,7 +804,7 @@ const processOwnerSkill = async (loserAid, lostAmount, roomId) => {
         let refund = Math.floor(lostAmount * ownerSkill.selfRefund);
         if (refund > 0) {
             await addMoney(loserAid, refund);
-            sendMessage(roomId, `[info]🔮👑 【運命の胴元】の力で、自らの負け金の一部 ${formatNumber(refund)} コインを未来から取り戻した！[/info]`);
+            delayedSendMessage(roomId, `[info]🔮👑 【運命の胴元】の力で、自らの負け金の一部 ${formatNumber(refund)} コインを未来から取り戻した！[/info]`);
         }
     }
 };
@@ -4150,7 +4156,23 @@ if (localLastResetDate !== today) {
                 player.job_state.tenbin_uses_date = today;
                 player.job_state.tenbin_uses_today = tenbinUsesToday + 1;
                 await supabase.from('players').update({ job_state: JSON.stringify(player.job_state) }).eq('account_id', senderId);
-                return sendTempMessage(roomId, `[info]⚖️ 【てんびん】の能力を発動！(本日 ${tenbinUsesToday + 1}/${tenbinMaxUses} 回目)\n運命の天秤が揺れ動く……！(自分が選んだ目の勝率が上昇、稀に反転)[/info]`);
+
+                let rewriteMsg = "";
+                if (g.futureVisionCastBy && g.futureVisionCastBy !== senderId) {
+                    let visionCasterAid = g.futureVisionCastBy;
+                    if (Math.random() < 0.6) {
+                        if (g.type === 'rolet') g.futureResult = Math.floor(Math.random() * 37);
+                        else if (g.type === 'sicbo') g.futureResult = [Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1];
+                        else if (g.type === 'chouhan') g.futureResult = [Math.floor(Math.random()*6)+1, Math.floor(Math.random()*6)+1];
+                        else if (g.type === 'highlow') g.futureResult = [Math.floor(Math.random()*13)+1, Math.floor(Math.random()*13)+1];
+                        g.futureVisionCastBy = null;
+                        rewriteMsg = `\n\n⚖️👁️‍🗨️ 天秤の力が運命に干渉した！[piconname:${visionCasterAid}] が視た未来が書き換えられた...！`;
+                    } else {
+                        rewriteMsg = `\n\n⚖️ 天秤で運命を書き換えようとしたが、[piconname:${visionCasterAid}] の未来視の方が強かった...！`;
+                    }
+                }
+
+                return sendTempMessage(roomId, `[info]⚖️ 【てんびん】の能力を発動！(本日 ${tenbinUsesToday + 1}/${tenbinMaxUses} 回目)\n運命の天秤が揺れ動く……！(自分が選んだ目の勝率が上昇、稀に反転)${rewriteMsg}[/info]`);
             }
 
             if (/(^|\n)[/#]sekigan\b/.test(body) && gambleActive) {
@@ -4529,8 +4551,13 @@ if (localLastResetDate !== today) {
                     return sendTempMessage(roomId, `[info]⚠️ このゲームでは未来視できません。[/info]`);
                 }
 
+                // 【てんびん対抗】天秤側から見て「書き換え可能」なタイプのビジョンは記録しておく
+                if (['rolet', 'sicbo', 'chouhan', 'cc', 'crash', 'highlow', 'bj', 'buta', 'poker', 'daifugo'].includes(g.type)) {
+                    g.futureVisionCastBy = senderId;
+                }
+
                 await supabase.from('players').update({ job_state: JSON.stringify({ ...player.job_state, future_uses_date: today, future_uses_today: futureUsesToday + 1 }) }).eq('account_id', senderId);
-                return sendTempMessage(roomId, `[info][title]👁️ 未来視[/title][piconname:${senderId}]\n頭の中に未来のビジョンが流れ込んできた...！\n\n${futureMsg}${futureMaxUses > 1 ? `\n(本日 ${futureUsesToday + 1}/${futureMaxUses} 回目)` : ''}[/info]`);
+                return sendTempMessage(roomId, `[info][title]👁️ 未来視[/title][piconname:${senderId}]\n頭の中に未来のビジョンが流れ込んできた...！\n\n${futureMsg}${futureMaxUses > 1 ? `\n(本日 ${futureUsesToday + 1}/${futureMaxUses} 回目)` : ''}\n\n⚠️ ただし、誰かが【てんびん】の力を発動すると60%の確率で運命ごと書き換えられてしまいます...[/info]`);
             }
 
             // --- 株機能 ---
@@ -5020,12 +5047,12 @@ if (localLastResetDate !== today) {
 🧮 数学者 (費用: 50,000)\n ▶ ルーレットの赤黒・偶数奇数等の2倍配当が「2.2倍」になる
 🎰 パチプロ (費用: 50,000)\n ▶ パチンコ遊技時の釘の入賞率が 5% から 7% に上がる
 🎰 賭博師 (費用: 200,000)\n ▶ 毎日初回ログイン時にスロット回数が自動で5〜10回分増加
-⚖️ てんびん (費用: 200,000)\n ▶ /#tenbin (1日1回、2択ゲームの勝率が30~50%UP。10%で逆に傾く)
+⚖️ てんびん (費用: 200,000)\n ▶ /#tenbin (1日1回、2択ゲームの勝率が30~50%UP。10%で逆に傾く。未来人が視た未来を60%の確率で書き換えられる)
 🔮 占い師 (費用: 700,000)\n ▶ 毎日初回ログイン時、まだ見つけていない実績のヒントを必ず1つ発見できる
 📈 トレーダー (費用: 600,000)\n ▶ /#work (800〜2500)\n ▶ 毎日初回ログイン時、保有株の評価額の0.3%を配当金として自動獲得
 👁️‍🗨️ 隻眼 (費用: 400,000)\n ▶ /#sekigan (1日1回、最初の手札/ダイスが見えなくなるが配当+1倍)
 👑 ギャンブルオーナー (費用: 1,000,000)\n ▶ /#owner (1日1回、30分間他人のギャンブル負け金の30%を30%の確率で回収)
-👁️ 未来人 (費用: 5,000,000)\n ▶ /#next-future (1日1回、70%の確率で現在進行中のゲームの未来を予知)
+👁️ 未来人 (費用: 5,000,000)\n ▶ /#next-future (1日1回、70%の確率で現在進行中のゲームの未来を予知。ただしてんびんに60%の確率で書き換えられる弱点あり)
 🔄 逆転のギャンブラー (費用: 1,000,000)\n ▶ デイリーRTPが低いと、ギャンブルに負けた時80%の確率で賭け金が戻ってくる
 🏦 銀行員 (費用: 1,000,000)\n ▶ 毎日初回ログイン時に、銀行の預金に1%の複利利息が付与される
 🎩 大富豪の執事 (費用: 400,000)\n ▶ ランキング1位か2位の人が稼ぐ度に、その利益の0.1%を給与として得る
