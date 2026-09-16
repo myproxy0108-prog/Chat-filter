@@ -23,6 +23,9 @@ let BOT_ACCOUNT_ID = null;
 let lastActiveRoomId = null;
 
 let ownerSkill = { aid: null, expire: 0, evoBoost: false, rate: 0.3, selfRefund: 0 };
+let fixerSkim = { aid: null, expire: 0, rate: 0.15 };
+// 【Fixer】その日ランダムに与えられるメイン能力の発動状態 (1ゲーム分だけ盤面全体に作用する)
+let fixerPower = { aid: null, mode: null, armed: false, stolenJob: null };
 const activePachinko = {};
 const activeScratch = {};
 
@@ -441,6 +444,79 @@ const checkKizunaBadges = async (aids, results, roomId) => {
     }
 };
 
+// 【Fixer】確率論的独裁: 出目・カードそのものを100%指定する。自分は最強の役、他人はゴミのような役に固定する。
+const applyFixerDictatorship = (game) => {
+    if (!fixerPower.armed || fixerPower.mode !== '確率論的独裁' || !game) return;
+    let fixerAid = fixerPower.aid;
+    let isFixerInGame = game.players && game.players.some(p => p.aid && p.aid.toString() === fixerAid.toString());
+    if (!isFixerInGame) return;
+
+    if (game.type === 'bj') {
+        game.dealerHand = [{ suit: '♠', rank: '10', value: 10 }, { suit: '♥', rank: '7', value: 7 }]; // 17固定(バーストせず21にもならない)
+        for (let p of game.players) {
+            if (p.aid.toString() === fixerAid.toString()) {
+                p.hand = [{ suit: '♠', rank: 'A', value: 1 }, { suit: '♠', rank: 'K', value: 10 }];
+                p.status = 'bj';
+            } else {
+                p.hand = [{ suit: '♣', rank: '10', value: 10 }, { suit: '♦', rank: '9', value: 9 }, { suit: '♥', rank: '5', value: 5 }];
+                p.status = 'bust';
+            }
+        }
+    } else if (game.type === 'poker') {
+        game.botHand = [{ suit: '♠', rank: '3' }, { suit: '♥', rank: '3' }, { suit: '♦', rank: '7' }, { suit: '♣', rank: '9' }, { suit: '♠', rank: 'J' }]; // ワンペア固定
+        for (let p of game.players) {
+            if (p.aid.toString() === fixerAid.toString()) {
+                p.hand = [{ suit: '♠', rank: 'A' }, { suit: '♠', rank: 'K' }, { suit: '♠', rank: 'Q' }, { suit: '♠', rank: 'J' }, { suit: '♠', rank: '10' }]; // ロイヤルストレートフラッシュ
+            } else {
+                p.hand = [{ suit: '♠', rank: '2' }, { suit: '♥', rank: '5' }, { suit: '♦', rank: '9' }, { suit: '♣', rank: 'J' }, { suit: '♥', rank: 'K' }]; // 役なし
+            }
+        }
+    } else if (game.type === 'yacht') {
+        game.botDice = [3, 3, 3, 1, 5]; // スリーダイス(rank1)固定。ヨット(rank6)には勝てず、役なし(rank0)には勝てる
+        for (let p of game.players) {
+            if (p.aid.toString() === fixerAid.toString()) { p.dice = [6, 6, 6, 6, 6]; p.rolls = 3; }
+            else { p.dice = [1, 1, 2, 2, 6]; p.rolls = 3; } // 役なし(rank0)固定、ディーラーに確実に負ける
+        }
+    } else if (game.type === 'cc') {
+        game.botRoll = { dice: [2,2,5], name: "5の目", rank: 2, score: 5, mult: 1 }; // ピンゾロ(rank6)には勝てず、ヒフミ(rank0)には勝てる
+        for (let p of game.players) {
+            if (p.aid.toString() === fixerAid.toString()) p.res = { dice: [1,1,1], name: "ピンゾロ", rank: 6, score: 1, mult: 5 };
+            else p.res = { dice: [1,2,3], name: "ヒフミ", rank: 0, score: 0, mult: -2 };
+        }
+    } else if (game.type === 'buta') {
+        game.dealerHand = [{ suit: '♠', rank: 'A' }, { suit: '♥', rank: '2' }]; // 2枚・非ドボンで固定
+        for (let p of game.players) {
+            if (p.aid.toString() === fixerAid.toString()) {
+                p.hand = [{ suit: '♠', rank: 'A' }, { suit: '♥', rank: '2' }, { suit: '♦', rank: '3' }, { suit: '♣', rank: '4' }, { suit: '♠', rank: '5' }];
+                p.status = 'stand';
+            } else {
+                p.hand = [{ suit: '♠', rank: 'A' }, { suit: '♠', rank: '2' }]; // 同じスートでドボン
+                p.status = 'bust';
+            }
+        }
+    } else if (['chouhan', 'sicbo', 'highlow', 'derby'].includes(game.type)) {
+        let fixerP = game.players.find(p => p.aid.toString() === fixerAid.toString());
+        let choice = fixerP ? fixerP.choice : null;
+        if (game.type === 'chouhan') {
+            game.futureResult = choice === 'chou' ? [2, 2] : [1, 2]; // 偶数和(chou) or 奇数和(han)
+        } else if (game.type === 'sicbo') {
+            // ゾロ目(トリプル)は特殊扱いになり大小のどちらも負けになるため、必ず非ゾロ目で大小を確定させる
+            game.futureResult = choice === 'dai' ? [6, 6, 5] : [1, 1, 2]; // 大(sum17,非ゾロ) or 小(sum4,非ゾロ)
+        } else if (game.type === 'highlow') {
+            game.futureResult = choice === 'high' ? [1, 13] : (choice === 'low' ? [13, 1] : [5, 5]);
+        } else if (game.type === 'derby' && choice) {
+            game.futureResult = choice;
+        }
+    } else if (game.type === 'crash') {
+        let fixerP = game.players.find(p => p.aid.toString() === fixerAid.toString());
+        let target = fixerP ? (parseFloat(fixerP.choice) || 1.01) : 1.5;
+        game.crashPoint = (target + 0.01).toFixed(2);
+    } else if (game.type === 'daifugo' && game.daifugo) {
+        // 手札そのものの書き換えは複雑なため、最終順位そのものをFixer最上位・他は下位に固定する
+        game.fixerForceRank = true;
+    }
+};
+
 // 装備中の称号を名前の前に付けたタグを返す (aidは文字列)
 const nameTag = async (aid) => {
     try {
@@ -485,6 +561,68 @@ const processBuffs = async (aid, isWin, isLose, isDraw, mult, resTxt, betAmount 
     let { data: pData } = await supabase.from('players').select('job_state, job').eq('account_id', aid).single();
     let js = pData && typeof pData.job_state === 'string' ? JSON.parse(pData.job_state || '{}') : (pData?.job_state || {});
     let updated = false;
+
+    // 【Fixer】副能力『装備』: 装着したアイテムの効果を永続的に自分の能力として発動する
+    if (js.fix_equipped_item) {
+        if (js.fix_equipped_item === '幸運の四つ葉') js.clover_active = true;
+        else if (js.fix_equipped_item === 'ダブルアップ・コイン' && !js.double_up_guess) js.double_up_guess = (Math.random() < 0.5 ? '表' : '裏');
+    }
+
+    // 【Fixer】メイン能力(その日ランダムに与えられた1つ)。盤面全体を書き換える強力な効果。
+    if (fixerPower.armed && fixerPower.aid) {
+        let isFixer = (aid.toString() === fixerPower.aid.toString());
+        if (fixerPower.mode === '確率論的独裁') {
+            // 全プレイヤーの出目・カードをFixerが掌握する。自分は最強、他人はゴミ役に固定。当たりは均一2倍。
+            if (isFixer) {
+                isWin = true; isLose = false; isDraw = false; mult = 2;
+                resTxt += `\n🕴️👑 【確率論的独裁】…出目もカードも、全て俺が決める。(配当は均一2倍)`;
+            } else {
+                isWin = false; isLose = true; isDraw = false;
+                resTxt += `\n🕴️👑 【確率論的独裁】…お前の手札は最初から紙屑だ。`;
+            }
+        } else if (fixerPower.mode === '次元の亀裂') {
+            // 盤面上のあらゆる配当をFixerのベットに集約する。他人の配当は0。
+            if (isFixer) {
+                if (isWin) { mult += 2.0; resTxt += `\n🕴️🕳️ 【次元の亀裂】…この卓の富は、全て俺の元へ落ちてくる。`; }
+            } else if (isWin) {
+                mult = 0;
+                resTxt += `\n🕴️🕳️ 【次元の亀裂】…お前の配当は、亀裂の向こうへ吸い込まれて消えた。`;
+            }
+        } else if (fixerPower.mode === '混迷の調停') {
+            // 参加者全員の役職スキルを無効化し、その恩恵をFixerだけに集約する。
+            if (isFixer) {
+                if (isWin) { mult += 1.5; resTxt += `\n🕴️🌀 【混迷の調停】…この場の力は全て俺が預かる。`; }
+            } else {
+                js.tenbin_active = false; js.sekigan_active = false; js.clover_active = false;
+                js.insurance_active = false; js.dealer_weakness_active = false; js.double_up_guess = null;
+                js.special_armed = false;
+                updated = true;
+                resTxt += `\n🕴️🌀 【混迷の調停】…お前の力は封じさせてもらった。`;
+            }
+        } else if (fixerPower.mode === '役職強奪') {
+            // 指名した1名の職業スキルをコピーして発動する。
+            if (isFixer && isWin) {
+                mult += 1.0;
+                resTxt += `\n🕴️🎭 【役職強奪】…お前の力、借りるぞ。${fixerPower.stolenJob ? `(奪取: ${fixerPower.stolenJob})` : ''}`;
+            }
+        } else if (fixerPower.mode === '役職融合(シンクロニシティ)') {
+            // 参加者全員の役職スキルを同時にコピーし、順次発動させる。
+            if (isFixer && isWin) {
+                mult += 2.5;
+                resTxt += `\n🕴️✨ 【役職融合(シンクロニシティ)】…この場の全ての才能が、今、俺の中で重なる。`;
+            }
+        }
+        // Fixer本人の結果を処理し終えた時点で、この力は1ゲーム限りなので解除する
+        // (他プレイヤーの処理が先に走る場合もあるため、少し遅らせて確実に全員へ作用させてから解除する)
+        if (isFixer) {
+            let expiringMode = fixerPower.mode;
+            setTimeout(() => {
+                if (fixerPower.mode === expiringMode) {
+                    fixerPower.armed = false; fixerPower.aid = null; fixerPower.mode = null; fixerPower.stolenJob = null;
+                }
+            }, 5000);
+        }
+    }
 
     // 【たかしくん】【てつやくん】(管理者付与限定) /( ・∇・) で発動した特殊効果 (1日1回発動・次のゲーム結果に反映される)
     if (js.special_armed && pData && pData.job === 'たかしくん') {
@@ -663,6 +801,13 @@ const updatePlayerStats = async (accountId, betAmount, returnAmount, resultType,
     if (betAmount > 0) js.daily_stats.bet += Math.abs(betAmount);
     js.daily_stats.return += Math.abs(returnAmount);
 
+    // 【豪運の持ち主】用: その日ごとのプレイ数・勝利数を記録する(通算ではなく日ごとに判定するため)
+    if (!js.daily_record) js.daily_record = { plays: 0, wins: 0 };
+    if (countRecord) {
+        js.daily_record.plays += qty;
+        if (resultType === 'win') js.daily_record.wins += qty;
+    }
+
     if (resultType === 'win' && isTableGame) {
         if (!js.daily_quests) js.daily_quests = { work_count: 0, slot_count: 0, table_win_count: 0, silver_claimed: false, gold_claimed: false };
         js.daily_quests.table_win_count++;
@@ -702,14 +847,14 @@ const updatePlayerStats = async (accountId, betAmount, returnAmount, resultType,
     if (js.ten_x_wins) {
         await checkProgressBadge(accountId, js.ten_x_wins, [1, 5, 10, 50, 100], '10倍返し');
     }
-    // 【豪運の持ち主】通算勝率 (最低30戦プレイしてから判定。バランス調整のための最低試行数)
-    if (plays >= 30) {
-        let winRate = (wins / plays) * 100;
+    // 【豪運の持ち主】その日の勝率 (最低10戦プレイしてから判定。バランス調整のための最低試行数)
+    if (js.daily_record.plays >= 10) {
+        let winRate = (js.daily_record.wins / js.daily_record.plays) * 100;
         await checkProgressBadge(accountId, winRate, [50, 60, 70], '豪運の持ち主');
     }
-    // 【目指せ3倍】通算RTP(回収率) (最低10万コイン以上賭けてから判定。バランス調整のための最低試行額)
-    if (total_bet >= 100000) {
-        let rtp = (total_return / total_bet) * 100;
+    // 【目指せ3倍】その日のRTP(回収率) (最低3万コイン以上賭けてから判定。バランス調整のための最低試行額)
+    if (js.daily_stats.bet >= 30000) {
+        let rtp = (js.daily_stats.return / js.daily_stats.bet) * 100;
         await checkProgressBadge(accountId, rtp, [150, 200, 250, 300], '目指せ3倍');
     }
 
@@ -887,6 +1032,13 @@ const processBounty = async (loserAid, lostAmount, roomId) => {
             bountyMsg += `\n🛡️ [保険屋]の特権により、負け金の一部 ${formatNumber(refund)} コインが自動的に返還されました。`;
         }
     }
+    // 【Fixer】副能力『揉み消し』: 負けるたびに5%の確率で賭け金が全額返金される(常時発動)
+    if (selfP && selfP.job === 'Fixer') {
+        if (Math.random() < 0.05 && lostAmount > 0) {
+            await addMoney(loserAid, lostAmount);
+            bountyMsg += `\n🕴️ 【Fixer】…この勝負はなかったことにしておこう。賭け金 ${formatNumber(lostAmount)} コインが全額戻ってきた。`;
+        }
+    }
     return bountyMsg;
 };
 
@@ -937,6 +1089,19 @@ const processJoker = async (winnerAid, winAmt, roomId) => {
             }
         }
     }
+    // 【Fixer】メイン能力『ショバ代』: 発動中、他人の配当から一定割合を裏で抜き取る
+    let nowTs = Date.now();
+    if (fixerSkim.expire > nowTs && fixerSkim.aid && fixerSkim.aid !== winnerAid.toString()) {
+        if (!excluded.includes(fixerSkim.aid.toString())) {
+            let skim = Math.floor(winAmt * (fixerSkim.rate || 0.15));
+            if (skim > 0) {
+                await addMoney(fixerSkim.aid, skim);
+                stolen += skim;
+                jokerMsg += `\n🕴️ (※この卓の元締めにショバ代として ${formatNumber(skim)} コイン抜かれました)`;
+            }
+        }
+    }
+
     return { stolen, jokerMsg };
 };
 
@@ -2101,6 +2266,7 @@ const resolveBJ = async (roomId) => {
     let game = gameState[roomId]; 
     if (!game) return; 
     clearTimeout(game.timeoutId);
+    applyFixerDictatorship(game);
     
     let dScore = calculateBJScore(game.dealerHand);
     let dStr = game.dealerHand.map(c => c.suit + c.rank).join(' ');
@@ -2196,6 +2362,7 @@ const resolvePoker = async (roomId) => {
     let game = gameState[roomId]; 
     if (!game) return; 
     clearTimeout(game.timeoutId);
+    applyFixerDictatorship(game);
     
     let botEv = getPokerRank(game.botHand);
     let botStr = game.botHand.map(c => c.suit + c.rank).join(' ');
@@ -2278,6 +2445,7 @@ const resolveYacht = async (roomId) => {
     let game = gameState[roomId]; 
     if (!game) return; 
     clearTimeout(game.timeoutId);
+    applyFixerDictatorship(game);
     
     let botEv = getYachtRank(game.botDice);
     let botStr = game.botDice.map(d => `🎲${d}`).join('');
@@ -2377,6 +2545,7 @@ const resolveButa = async (roomId) => {
     let game = gameState[roomId]; 
     if (!game) return; 
     clearTimeout(game.timeoutId);
+    applyFixerDictatorship(game);
     
     let dHand = game.dealerHand;
     let isDBust = dHand.length > 1 && dHand[dHand.length - 1].suit === dHand[dHand.length - 2].suit;
@@ -2471,6 +2640,7 @@ const resolveChinchiro = async (roomId) => {
     let game = gameState[roomId]; 
     if (!game) return; 
     clearTimeout(game.timeoutId);
+    applyFixerDictatorship(game);
     
     let parentRoll = game.botRoll; 
     let msg = `[info][title]🎲 チンチロリン 最終結果[/title]【 ディーラー(親) の出目 】\n[ ${parentRoll.dice.join(', ')} ] ➡ 『 ${parentRoll.name} 』\n[hr]【 プレイヤー結果 】\n`;
@@ -2552,6 +2722,7 @@ const resolveChouhan = async (roomId, mId) => {
     let game = gameState[roomId]; 
     if (!game) return; 
     clearTimeout(game.timeoutId);
+    applyFixerDictatorship(game);
     
     let d1, d2;
     if (game.futureResult) { d1 = game.futureResult[0]; d2 = game.futureResult[1]; }
@@ -2669,6 +2840,7 @@ const resolveSicbo = async (roomId, mId) => {
     let game = gameState[roomId]; 
     if (!game) return; 
     clearTimeout(game.timeoutId);
+    applyFixerDictatorship(game);
     
     let d1, d2, d3;
     if (game.futureResult) { d1 = game.futureResult[0]; d2 = game.futureResult[1]; d3 = game.futureResult[2]; }
@@ -2797,6 +2969,15 @@ const resolveRoulette = async (roomId, resultNum) => {
     let game = gameState[roomId]; 
     if (!game) return; 
     clearTimeout(game.timeoutId);
+    applyFixerDictatorship(game);
+    // 【Fixer】確率論的独裁: ルーレットの結果番号自体をFixerの賭けに合わせて書き換える
+    if (fixerPower.armed && fixerPower.mode === '確率論的独裁' && game.players.some(p => p.aid && p.aid.toString() === fixerPower.aid.toString())) {
+        let fixerP = game.players.find(p => p.aid.toString() === fixerPower.aid.toString());
+        if (fixerP && ['red','black','even','odd','high','low'].includes(fixerP.choice)) {
+            const pick = { red: 1, black: 2, even: 10, odd: 3, high: 19, low: 1 };
+            resultNum = pick[fixerP.choice];
+        }
+    }
     
     let isRed = [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36].includes(resultNum);
     let isBlack = [2,4,6,8,10,11,13,15,17,20,22,24,26,28,29,31,33,35].includes(resultNum);
@@ -3576,6 +3757,7 @@ if (localLastResetDate !== today) {
                 }
 
                 player.job_state.daily_stats = { bet: 0, return: 0 };
+                player.job_state.daily_record = { plays: 0, wins: 0 };
                 player.job_state.daily_bounty_used = false;
                 player.job_state.takashi_slot_saves = 0; // 【たかしくん】スロット救済回数リセット
                 // 【エボリューショナー】前日使い残した強化フラグを掃除(1日限りの効果のため)
@@ -3588,6 +3770,15 @@ if (localLastResetDate !== today) {
                 player.job_state.evo_boost_sekigan_bonus = 0;
                 player.job_state.evo_boost_bounty_pct = 0;
                 player.job_state.evo_counter_fate = false;
+                // 【Fixer】前日使い残した裏工作フラグを掃除 (装備は永続なので消さない)
+                player.job_state.fix_rig_win = false;
+                player.job_state.fix_rig_payout = false;
+                player.job_state.fix_insurance_left = 0;
+                // 【Fixer】装備アイテムの毎日発動系の効果
+                if (player.job === 'Fixer' && player.job_state.fix_equipped_item === '残業チケット') {
+                    player.work_limit = (player.work_limit || 0) + 3;
+                    jobMsg += `\n🕴️ [装備:残業チケット] /#work の回数が +3 されました。`;
+                }
                 player.job_state.daily_quests = { work_count: 0, slot_count: 0, table_win_count: 0, silver_claimed: false, gold_claimed: false };
                 
                 if (player.job_state.daily_blackmarket_found) {
@@ -3666,6 +3857,7 @@ if (localLastResetDate !== today) {
                     daily_start_networth: startNet,
                     slot_count: player.slot_count, 
                     skill_date: player.skill_date,
+                    work_limit: player.work_limit,
                     job_state: JSON.stringify(player.job_state)
                 }).eq('account_id', senderId);
                 
@@ -5020,7 +5212,7 @@ if (localLastResetDate !== today) {
                 return sendTempMessage(roomId, `[info][title]📊 プレイヤー情報[/title]${await nameTag(targetAid)} 様 (最終ログイン: ${lastLoginStr})\n\n💰 所持金: ${formatNumber(tMoney)} コイン${bStr}${kabuStr}\n💎 純資産: ${formatNumber(netWorth)} コイン${streakStr}${pStreakStr}${statsStr}${drtpStr}\n[hr]👔 職業: ${tJob}\n🎰 スロット残り: ${remSlot} 回\n💼 お仕事残り: ${targetPlayer.work_limit || 0} 回\n⛩️ 今日の運勢: ${targetPlayer.omikuji_result || '未引'}${targetMsg}${itemStr}\n[hr]※1分後に自動消去されます[/info]`);
             }
 
-            const cJobMatch = body.match(/(^|\n)[/#]job\s+(サラリーマン|公務員|警察官|プロスポーツ選手|賭博師|ギャンブルオーナー|未来人|逆転のギャンブラー|銀行員|大富豪の執事|賞金稼ぎ|数学者|パチプロ|てんびん|隻眼|トレーダー|保険屋|カジノ王|占い師|エボリューショナー)/);
+            const cJobMatch = body.match(/(^|\n)[/#]job\s+(サラリーマン|公務員|警察官|プロスポーツ選手|賭博師|ギャンブルオーナー|未来人|逆転のギャンブラー|銀行員|大富豪の執事|賞金稼ぎ|数学者|パチプロ|てんびん|隻眼|トレーダー|保険屋|カジノ王|占い師|エボリューショナー|Fixer)/);
             if (cJobMatch && gambleActive) {
                 const jn = cJobMatch[2]; const cs = {
                     'サラリーマン': 0, '公務員': 2000, '警察官': 3000, 'プロスポーツ選手': 5000, 
@@ -5028,10 +5220,13 @@ if (localLastResetDate !== today) {
                     '逆転のギャンブラー': 1000000, '銀行員': 1000000, '大富豪の執事': 400000,
                     '賞金稼ぎ': 10000, '数学者': 50000, 'パチプロ': 50000, 'てんびん': 200000, '隻眼': 400000,
                     'トレーダー': 600000, '保険屋': 800000, 'カジノ王': 2000000, '占い師': 700000,
-                    'エボリューショナー': 50000000
+                    'エボリューショナー': 50000000, 'Fixer': 100000000
                 };
                 if (jn === 'エボリューショナー' && (player.job_state.completed_achievements || []).length < 10) {
                     return sendTempMessage(roomId, `[info]⚠️ エボリューショナーになるには、実績を10個以上「完全制覇」する必要があります。\n(現在: ${(player.job_state.completed_achievements || []).length}/10 個)[/info]`);
+                }
+                if (jn === 'Fixer' && (player.job_state.completed_achievements || []).length < 15) {
+                    return sendTempMessage(roomId, `[info]⚠️ Fixer になるには、実績を15個以上「完全制覇」する必要があります。\n(現在: ${(player.job_state.completed_achievements || []).length}/15 個)[/info]`);
                 }
                 if (myJob === jn) return sendTempMessage(roomId, `[info]⚠️ ${makeReplyTag(senderId, roomId, msgId)}\nすでに ${jn} に就いています！[/info]`);
                 if (myMoney < cs[jn]) return sendTempMessage(roomId, `[info]⚠️ ${makeReplyTag(senderId, roomId, msgId)}\nお金が足りません！(転職費用: ${formatNumber(cs[jn])} コイン)[/info]`);
@@ -5059,7 +5254,120 @@ if (localLastResetDate !== today) {
 🛡️ 保険屋 (費用: 800,000)\n ▶ /#work (900〜2200)\n ▶ 自身がギャンブルで負けた際、常に負け金の10%が自動的に返還される
 🎰 カジノ王 (費用: 2,000,000)\n ▶ 毎日初回ログイン時、前日の合計ベット額の1%がキャッシュバックされる
 🧬 エボリューショナー (費用: 50,000,000 / 実績「完全制覇」10個以上で解禁)\n ▶ /#evolve [役職1] [役職2] (1日1回、既存の役職2つの能力を掛け合わせる。特定の「ベストマッチ」の組み合わせは専用の強力な複合能力に化ける！)
+🕴️ Fixer (費用: 100,000,000 / 実績「完全制覇」15個以上で解禁)\n ▶ /#fix [手段] (1日1回、4つの「裏工作」から好きなものを選んで実行する)\n ▶ 副能力『揉み消し』: ギャンブルで負けるたび、5%の確率で賭け金が全額返金される(常時発動)
 [hr]※転職コマンド: /#job 役職名[/info]`);
+            }
+
+            // --- Fixer専用: 裏からギャンブルを操作するコマンド (1日1回、能力はランダムに決まる・選択不可) ---
+            if (/(^|\n)[/#]fix\b/.test(body) && gambleActive) {
+                if (myJob !== 'Fixer') return sendTempMessage(roomId, `[info]⚠️ Fixer 専用のコマンドです。[/info]`);
+
+                const FIX_POWERS = [
+                    { name: '確率論的独裁', desc: '全プレイヤーの出目・カードを100%掌握する。自分は必勝、他プレイヤーは全員敗北に固定される。(この時の配当は均一2倍)' },
+                    { name: '役職強奪', desc: '他プレイヤー1名を指名し、その職業スキルをコピーして1ゲームだけ発動する。' },
+                    { name: '混迷の調停', desc: '参加者全員の役職スキルを強制的に無効化し、その恩恵をFixerだけに集約する。' },
+                    { name: '役職融合(シンクロニシティ)', desc: '参加者全員の役職スキルを同時にコピーし、1ターンの中で全て発動させる。' },
+                    { name: '次元の亀裂(ブラックホール)', desc: '盤面上のあらゆる配当をFixerに集約する。他プレイヤーの配当は0になる。' },
+                ];
+
+                // アカウント単位でロック＋再取得し、連続実行による1日複数回発動を防止
+                let fixGateOk = true;
+                let fts;
+                await withBadgeLock(senderId, async () => {
+                    let { data: fp } = await supabase.from('players').select('job_state').eq('account_id', senderId).single();
+                    fts = fp && typeof fp.job_state === 'string' ? JSON.parse(fp.job_state || '{}') : (fp?.job_state || {});
+                    if (fts.fix_used_date === today) { fixGateOk = false; return; }
+                    fts.fix_used_date = today;
+                    await supabase.from('players').update({ job_state: JSON.stringify(fts) }).eq('account_id', senderId);
+                });
+                if (!fixGateOk) return sendTempMessage(roomId, `[info]⚠️ 今日はもう手を回した後だ。(1日1回まで)[/info]`);
+
+                // 能力はプレイヤーが選べず、ランダムに決定される
+                let rolled = FIX_POWERS[Math.floor(Math.random() * FIX_POWERS.length)];
+                let modeKey = rolled.name === '次元の亀裂(ブラックホール)' ? '次元の亀裂' : rolled.name;
+
+                fixerPower.aid = senderId;
+                fixerPower.mode = modeKey;
+                fixerPower.armed = true;
+                fixerPower.stolenJob = null;
+
+                // 『役職強奪』の場合のみ、対象を1名ランダムに指名してその職業を奪う
+                let stealMsg = "";
+                if (modeKey === '役職強奪') {
+                    let g = gameState[roomId];
+                    let others = (g && g.players) ? g.players.filter(x => x.aid && x.aid !== 'bot' && x.aid.toString() !== senderId.toString()) : [];
+                    if (others.length > 0) {
+                        let victim = others[Math.floor(Math.random() * others.length)];
+                        let { data: vp } = await supabase.from('players').select('job').eq('account_id', victim.aid).single();
+                        fixerPower.stolenJob = vp?.job || null;
+                        stealMsg = `\n🎭 標的: [piconname:${victim.aid}] (奪取した職業: ${fixerPower.stolenJob || '不明'})`;
+                    } else {
+                        stealMsg = `\n🎭 (現在この場に奪える相手がいないため、次のゲームの参加者から奪います)`;
+                    }
+                }
+
+                await supabase.from('players').update({ job_state: JSON.stringify(fts) }).eq('account_id', senderId);
+                return sendMessage(roomId, `[info][title]🕴️ Fixer 始動 -【${rolled.name}】[/title][piconname:${senderId}]\n今日、盤面に降りてきた力は選べない。\n\n${rolled.desc}${stealMsg}\n\n▶ 次のゲーム1回だけ、この力が盤面全体に作用します。[/info]`);
+            }
+
+            // --- Fixer専用: アイテムを永続装備するコマンド (副能力) ---
+            if (/(^|\n)[/#]equip\b/.test(body) && gambleActive) {
+                if (myJob !== 'Fixer') return sendTempMessage(roomId, `[info]⚠️ Fixer 専用のコマンドです。[/info]`);
+
+                // 「負けを無効化する」系のアイテムは装備できない
+                const EQUIP_BANNED = ['ディーラーの弱み', '保険証書', '逆転の護符'];
+                const EQUIP_EFFECTS = {
+                    '幸運の四つ葉': '勝利時の配当が常に +0.3倍 される',
+                    'ダブルアップ・コイン': '勝利するたびに自動でコイントスが発生し、的中すれば配当2倍',
+                    'ラッキー釘': 'パチンコの入賞率が常に100%になる',
+                    '黄金の招き猫': '毎日の預金利息(+0.5%)が常に発生する',
+                    '目眩し弾薬': '自分を狙う賞金稼ぎ・ジョーカーの標的設定を常に解除し続ける',
+                    '残業チケット': '毎日のログイン時に /#work の回数が +3 される',
+                    'ジョーカーの招待状': '毎日のログイン時に自動で補充される',
+                };
+
+                let eqArg = (body.match(/(^|\n)[/#]equip\s+(\S+)/) || [])[2];
+                if (!eqArg) {
+                    let cur = player.job_state.fix_equipped_item ? `\n\n現在の装備: 【${player.job_state.fix_equipped_item}】` : `\n\n現在、何も装備していません。`;
+                    let listStr = Object.entries(EQUIP_EFFECTS).map(([k, v]) => `・${k}\n　▶ ${v}`).join('\n');
+                    return sendTempMessage(roomId, `[info][title]🕴️ Fixer - アイテム装備[/title]アイテムを1つだけ永続装備し、その効果を自分の能力にできる。\n(装備は1つのみ。/#equip 解除 で外せる)\n\n${listStr}${cur}\n\n例: /#equip 幸運の四つ葉[/info]`);
+                }
+
+                if (eqArg === '解除') {
+                    let { data: rp } = await supabase.from('players').select('items, job_state').eq('account_id', senderId).single();
+                    let rItems = rp && typeof rp.items === 'string' ? JSON.parse(rp.items || '{}') : (rp?.items || {});
+                    let rJs = rp && typeof rp.job_state === 'string' ? JSON.parse(rp.job_state || '{}') : (rp?.job_state || {});
+                    if (!rJs.fix_equipped_item) return sendTempMessage(roomId, `[info]⚠️ 何も装備していない。[/info]`);
+                    rItems[rJs.fix_equipped_item] = (rItems[rJs.fix_equipped_item] || 0) + 1;
+                    let removed = rJs.fix_equipped_item;
+                    rJs.fix_equipped_item = null;
+                    await supabase.from('players').update({ items: JSON.stringify(rItems), job_state: JSON.stringify(rJs) }).eq('account_id', senderId);
+                    return sendTempMessage(roomId, `[info]🕴️ 【${removed}】の装備を外した。(アイテムは手元に戻った)[/info]`);
+                }
+                if (EQUIP_BANNED.includes(eqArg)) {
+                    return sendTempMessage(roomId, `[info]⚠️ 「負けを無効化する」類のアイテムは装備できない。[/info]`);
+                }
+                if (!EQUIP_EFFECTS[eqArg]) {
+                    return sendTempMessage(roomId, `[info]⚠️ そのアイテムは装備できない。/#equip で一覧を確認しろ。[/info]`);
+                }
+                if (!(await checkHasItem(senderId, eqArg))) {
+                    return sendTempMessage(roomId, `[info]⚠️ 【${eqArg}】を所持していない。[/info]`);
+                }
+
+                // 装備時にアイテムを1つ消費し、以降その効果が永続化する
+                // (1日1回のアイテム使用制限や破損判定は適用せず、確実に装備できるようにする)
+                let { data: eqP } = await supabase.from('players').select('items, job_state').eq('account_id', senderId).single();
+                let eqItems = eqP && typeof eqP.items === 'string' ? JSON.parse(eqP.items || '{}') : (eqP?.items || {});
+                let eqJs = eqP && typeof eqP.job_state === 'string' ? JSON.parse(eqP.job_state || '{}') : (eqP?.job_state || {});
+                if (!eqItems[eqArg] || eqItems[eqArg] <= 0) return sendTempMessage(roomId, `[info]⚠️ 【${eqArg}】を所持していない。[/info]`);
+
+                // 既に何か装備している場合は、その装備を外して手元に戻す
+                if (eqJs.fix_equipped_item) eqItems[eqJs.fix_equipped_item] = (eqItems[eqJs.fix_equipped_item] || 0) + 1;
+
+                eqItems[eqArg]--;
+                eqJs.fix_equipped_item = eqArg;
+                await supabase.from('players').update({ items: JSON.stringify(eqItems), job_state: JSON.stringify(eqJs) }).eq('account_id', senderId);
+                return sendMessage(roomId, `[info][title]🕴️ 装備完了 -【${eqArg}】[/title][piconname:${senderId}]\nこのアイテムの力は、今日から俺のものだ。\n▶ ${EQUIP_EFFECTS[eqArg]} (永続)[/info]`);
             }
 
             // --- エボリューショナー専用: 役職2つを組み合わせて特殊能力を得るコマンド ---
@@ -5353,6 +5661,8 @@ if (localLastResetDate !== today) {
                 else if(myJob === '保険屋'){ e=Math.floor(Math.random()*1301)+900; m=`保険契約をまとめ、 ${formatNumber(e)} コイン稼ぎました！🛡️`; }
                 else if(myJob === 'カジノ王'){ e=Math.floor(Math.random()*2501)+1500; m=`カジノの経営で、 ${formatNumber(e)} コイン稼ぎました！🎰`; }
                 else if(myJob === '占い師'){ e=Math.floor(Math.random()*1101)+700; m=`占いの館で、 ${formatNumber(e)} コイン稼ぎました！🔮`; }
+                else if(myJob === 'Fixer'){ e=Math.floor(Math.random()*3001)+2000; m=`裏社会の調整役として、 ${formatNumber(e)} コイン稼ぎました！🕴️`; }
+                else if(myJob === 'エボリューショナー'){ e=Math.floor(Math.random()*2001)+1500; m=`進化した力で、 ${formatNumber(e)} コイン稼ぎました！🧬`; }
                 // アカウント単位でロック＋再取得し、job_stateへの競合書き込みによる実績の取りこぼしを防止
                 let workTotal = 0;
                 await withBadgeLock(senderId, async () => {
