@@ -135,6 +135,7 @@ const editMessage = async (roomId, messageId, text) => {
     try { await chatworkClient.put(`/rooms/${roomId}/messages/${messageId}`, `body=${encodeURIComponent(text)}`); } catch(e) {}
 };
 
+// 修正前:
 const calculateNetWorth = (p) => {
     let tMoney = p.money || 0;
     let tBank = p.bank || 0;
@@ -150,6 +151,24 @@ const calculateNetWorth = (p) => {
     return tMoney + tBank + totalStockValue;
 };
 
+// 修正後:
+const calculateNetWorth = (p) => {
+    let tMoney = p.money || 0;
+    let tBank = p.bank || 0;
+    let totalStockValue = (p.kabu_owned || 0) * kabuData.price;
+    if (p && p.stocks && kabuData.realStocks) {
+        let s = {};
+        try {
+            s = typeof p.stocks === 'string' ? JSON.parse(p.stocks || '{}') : (p.stocks || {});
+        } catch (e) { s = {}; }
+        for (let k in s) {
+            if (kabuData.realStocks[k]) {
+                totalStockValue += (s[k] || 0) * (kabuData.realStocks[k].price || 0);
+            }
+        }
+    }
+    return tMoney + tBank + totalStockValue;
+};
 const getExcludedAids = async () => {
     const { data: eD } = await supabase.from('config').select('value').eq('key','rank_excluded').single();
     return eD ? JSON.parse(eD.value) : [];
@@ -5412,52 +5431,7 @@ if (localLastResetDate !== today) {
                 } else return sendTempMessage(roomId, `[info]⚠️ 手持ちの所持金が足りません。[/info]`);
             }
 
-            const witMatch = body.match(/(^|\n)[/#]withdraw\s+(max|half|[0-9]+)/);
-            if (witMatch && gambleActive) {
-                let amt = witMatch[2] === 'max' ? myBank : (witMatch[2] === 'half' ? Math.floor(myBank/2) : parseInt(witMatch[2], 10));
-                if (amt > 0 && myBank >= amt) {
-                    await supabase.from('players').update({ bank: myBank - amt }).eq('account_id', senderId);
-                    await addMoney(senderId, amt);
-                    return sendTempMessage(roomId, `[info]🏦 [piconname:${senderId}]\n銀行から ${formatNumber(amt)} コインを引き出しました。[/info]`);
-                } else return sendTempMessage(roomId, `[info]⚠️ 預金残高が足りません。[/info]`);
-            }
-
-            if (/(^|\n)[/#]give\b/.test(body) && gambleActive) {
-                let targetAid = repliedAid || (body.match(/(^|\n)[/#]give\s+([0-9]+)\s+([0-9]+)/)||[])[2];
-                let amt = parseInt((body.match(/(^|\n)[/#]give\s+([0-9]+)$/)||[])[2] || (body.match(/(^|\n)[/#]give\s+[0-9]+\s+([0-9]+)/)||[])[3], 10);
-                if (targetAid && amt > 0) {
-                    let netWorth = myMoney + myBank;
-                    if (netWorth < amt) return sendTempMessage(roomId, `[info][title]⚠️ 送金エラー[/title]${makeReplyTag(senderId, roomId, msgId)}\n純資産が不足しています！\n送金可能額は純資産分(${formatNumber(Math.max(0, netWorth))} コイン)までです。[/info]`);
-                    if (myMoney < amt) return sendTempMessage(roomId, `[info]手持ちの所持金が不足しています。\n預金がある場合は /withdraw で手元に引き出してください。[/info]`);
-                    
-                    let currentGiveAmount = (player.last_give_date === today) ? (player.daily_give_amount || 0) : 0;
-                    if (currentGiveAmount + amt > 500000) return sendTempMessage(roomId, `[info][title]⚠️ 送金上限エラー[/title]1日の送金上限(500,000 コイン)を超過します！\n(本日は既に ${formatNumber(currentGiveAmount)} コイン送金しています)[/info]`);
-                    
-                    let tax = Math.floor(amt * 0.10); let rAmt = amt - tax;
-                    await supabase.from('players').update({ money: myMoney - amt, daily_give_amount: currentGiveAmount + amt, last_give_date: today }).eq('account_id', senderId);
-                    await addMoney(targetAid, rAmt);
-                    return sendTempMessage(roomId, `[info][title]🎁 送金完了[/title][piconname:${senderId}] ➡ [piconname:${targetAid}]\n${formatNumber(amt)} コインを送金しました。\n[hr]※システム税 10% (${formatNumber(tax)} コイン) が引かれ、相手には ${formatNumber(rAmt)} コインが届きました。[/info]`);
-                }
-            }
-            if (/(^|\n)\/money-rank\b/.test(body)) {
-                const { data: eD } = await supabase.from('config').select('value').eq('key','rank_excluded').single(); 
-                let eI = eD ? JSON.parse(eD.value) : [];
-                const { data: ls } = await supabase.from('players').select('*'); 
-                let price = kabuData.price || 1000;
-                let f = ls ? ls.filter(d => !eI.includes(d.account_id)) : [];
-                
-                f.sort((a,b) => ((b.money||0) + (b.bank||0) + ((b.kabu_owned||0)*price)) - ((a.money||0) + (a.bank||0) + ((a.kabu_owned||0)*price)));
-                await grantRankBadges(f, '純資産', roomId);
-                let s = (await Promise.all(f.slice(0, 10).map(async (d, i) => {
-                    let net = (d.money||0) + (d.bank||0) + ((d.kabu_owned||0)*price); 
-                    let md = i===0 ? "🥇" : (i===1 ? "🥈" : (i===2 ? "🥉" : "🔹")); 
-                    let lastLoginStr = d.last_daily_date ? (d.last_daily_date === today ? "本日" : `${getDiffDays(d.last_daily_date, today)}日前`) : "未ログイン";
-                    return `${md} ${i+1}位: ${await nameTag(d.account_id)} (最終: ${lastLoginStr})\n　💎 純資産: ${formatNumber(net)} コイン [${d.job||'サラリーマン'}]`;
-                }))).join('\n[hr]');
-                
-                return sendTempMessage(roomId, `[info][title]👑 純資産ランキング TOP10[/title]${s}\n[hr]※5分後に自動消滅します[/info]`, 300000);
-            }
-            if (/(^|\n)[/#]status\b/.test(body)) {
+  if (/(^|\n)[/#]status\b/.test(body)) {
                 let targetPlayer = player;
                 let targetAid = senderId;
                 
@@ -5465,13 +5439,22 @@ if (localLastResetDate !== today) {
                     const { data: repPlayer } = await supabase.from('players').select('*').eq('account_id', repliedAid).single();
                     if (repPlayer) {
                         targetPlayer = repPlayer;
-                        if (typeof targetPlayer.items === 'string') targetPlayer.items = JSON.parse(targetPlayer.items || '{}');
-                        if (typeof targetPlayer.job_state === 'string') targetPlayer.job_state = JSON.parse(targetPlayer.job_state || '{}');
                         targetAid = repliedAid;
                     } else {
                         return sendTempMessage(roomId, `[info]⚠️ 対象のプレイヤーデータが見つかりません。[/info]`);
                     }
                 }
+
+                // items, job_state を安全にパース
+                let itemsObj = {};
+                try {
+                    itemsObj = typeof targetPlayer.items === 'string' ? JSON.parse(targetPlayer.items || '{}') : (targetPlayer.items || {});
+                } catch (e) { itemsObj = {}; }
+
+                let js = {};
+                try {
+                    js = typeof targetPlayer.job_state === 'string' ? JSON.parse(targetPlayer.job_state || '{}') : (targetPlayer.job_state || {});
+                } catch (e) { js = {}; }
 
                 let tMoney = targetPlayer.money || 0;
                 let tBank = targetPlayer.bank || 0;
@@ -5486,7 +5469,6 @@ if (localLastResetDate !== today) {
                 const bStr = `\n🏦 預金残高: ${formatNumber(tBank)} コイン`;
                 const streakStr = `\n🔥 連勝記録: ${targetPlayer.win_streak || 0} 連勝`;
                 
-                let js = targetPlayer.job_state || {};
                 let pMaxStreak = js.pachinko_max_streak || 0;
                 const pStreakStr = pMaxStreak > 0 ? `\n🎰 パチンコ最高連チャン数: ${pMaxStreak} 回` : "";
 
@@ -5496,39 +5478,43 @@ if (localLastResetDate !== today) {
                     drtpStr = `\n📊 デイリーRTP: ${dRTP}%`;
                 }
 
+                // ★ stocks の安全な展開
                 let kabuStr = '';
                 if ((targetPlayer.kabu_owned || 0) > 0) kabuStr += `\n📦 カジノ株: ${targetPlayer.kabu_owned} 株`;
                 if (targetPlayer.stocks) {
-                    let s = JSON.parse(targetPlayer.stocks);
+                    let s = {};
+                    try {
+                        s = typeof targetPlayer.stocks === 'string' ? JSON.parse(targetPlayer.stocks || '{}') : (targetPlayer.stocks || {});
+                    } catch (e) { s = {}; }
                     for (let k in s) {
                         if (s[k] > 0) kabuStr += `\n📦 ${k}: ${s[k]} 株`;
                     }
                 }
                 
                 let itemStr = '';
-                if (targetPlayer.items) {
-                    let hasItems = false;
-                    for (let itemName in targetPlayer.items) {
-                        if (targetPlayer.items[itemName] > 0) {
-                            itemStr += `\n🛍️ ${itemName}: ${targetPlayer.items[itemName]}個`;
-                            hasItems = true;
-                        }
+                let hasItems = false;
+                for (let itemName in itemsObj) {
+                    if (itemsObj[itemName] > 0) {
+                        itemStr += `\n🛍️ ${itemName}: ${itemsObj[itemName]}個`;
+                        hasItems = true;
                     }
-                    if (hasItems) itemStr = "\n[hr]【 所持アイテム 】" + itemStr;
                 }
+                if (hasItems) itemStr = "\n[hr]【 所持アイテム 】" + itemStr;
 
+                // ★ 全プレイヤー走査時の try-catch 保護
                 let targetMsg = "";
-                
                 const { data: allP } = await supabase.from('players').select('account_id, job_state');
                 if (allP) {
                     for (let op of allP) {
-                        let ojs = typeof op.job_state === 'string' ? JSON.parse(op.job_state||'{}') : (op.job_state||{});
-                        if (ojs.bounty_target === targetAid) {
-                            targetMsg += `\n🎯 誰かに賞金首として狙われている...！`;
-                        }
-                        if (ojs.joker_target === targetAid) {
-                            targetMsg += `\n🃏 誰かにジョーカーの罠を仕掛けられている...！`;
-                        }
+                        try {
+                            let ojs = typeof op.job_state === 'string' ? JSON.parse(op.job_state || '{}') : (op.job_state || {});
+                            if (ojs.bounty_target === targetAid) {
+                                targetMsg += `\n🎯 誰かに賞金首として狙われている...！`;
+                            }
+                            if (ojs.joker_target === targetAid) {
+                                targetMsg += `\n🃏 誰かにジョーカーの罠を仕掛けられている...！`;
+                            }
+                        } catch (e) {}
                     }
                 }
 
