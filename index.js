@@ -6775,12 +6775,12 @@ if (localLastResetDate !== today) {
                 } else return sendTempMessage(roomId, `[info]⚠️ ${makeReplyTag(senderId, roomId, msgId)} お金が足りません！[/info]`);
             }
 
-            if (/(^|\n)[/#]join\b/.test(body) && gambleActive) {
-                if (!fridayBingo || fridayBingo.roomId !== roomId || fridayBingo.started) return sendTempMessage(roomId, `[info]⚠️ 現在ビンゴの参加受付はしていません。[/info]`);
-                if (fridayBingo.players.has(senderId)) return sendTempMessage(roomId, `[info]⚠️ すでにビンゴへ参加しています。[/info]`);
-                fridayBingo.players.set(senderId, makeBingoCard());
-                return sendTempMessage(roomId, `[info][title]🎱 ビンゴ参加完了[/title][piconname:${senderId}]\n${bingoCardText(fridayBingo.players.get(senderId))}\n[hr]3分後の抽選開始をお待ちください。[/info]`, 180000);
-            }
+            if (/(^|\n)[/#]join\b/.test(body) && gambleActive
+    && fridayBingo && fridayBingo.roomId === roomId && !fridayBingo.started) {
+    if (fridayBingo.players.has(senderId)) return sendTempMessage(roomId, `[info]⚠️ すでにビンゴへ参加しています。[/info]`);
+    fridayBingo.players.set(senderId, makeBingoCard());
+    return sendTempMessage(roomId, `[info][title]🎱 ビンゴ参加完了[/title][piconname:${senderId}]\n${bingoCardText(fridayBingo.players.get(senderId))}\n[hr]3分後の抽選開始をお待ちください。[/info]`, 180000);
+}
 
             const horseCmd = body.match(/(^|\n)[/#](keiba|horse)(?:\s+(.+))?\b/);
             const npbCmd = body.match(/(^|\n)[/#]npb(?:\s+(.+))?\b/);
